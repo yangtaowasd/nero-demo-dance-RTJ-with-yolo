@@ -42,7 +42,8 @@ class ArmDriverNode(Node):
             10
         )
 
-        self.arm = Nero()
+        self.arm_ready = False
+        self.arm = Nero(channel=self.can_iface)
         self.arm_enable()
 
         self.timer = self.create_timer(0.05, self.arm_read)
@@ -56,18 +57,27 @@ class ArmDriverNode(Node):
         try:
             self.arm.connect()
             self.arm.enable()
+            self.arm_ready = True
             self.get_logger().info("arm connected and enabled")
         except Exception as e:
+            self.arm_ready = False
             self.get_logger().error(f"arm enable failed: {e}")
 
     def arm_disable(self):
+        if not self.arm_ready:
+            return
         try:
             self.arm.disable()
+            self.arm_ready = False
             self.get_logger().info("arm disabled")
         except Exception as e:
             self.get_logger().error(f"arm disable failed: {e}")
 
     def pose_sub_callback(self, msg):
+        if not self.arm_ready:
+            self.get_logger().warn("arm is not ready, skip move_j", throttle_duration_sec=1.0)
+            return
+
         angle_data = list(msg.data)
 
         if len(angle_data) != 7:
@@ -93,6 +103,9 @@ class ArmDriverNode(Node):
             self.get_logger().error(f"move_j failed: {e}")
 
     def arm_read(self):
+        if not self.arm_ready:
+            return
+
         try:
             joint_angles = self.arm.get_joint_angles().msg
 
