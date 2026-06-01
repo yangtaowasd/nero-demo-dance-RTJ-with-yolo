@@ -5,6 +5,24 @@ from std_msgs.msg import Float32MultiArray
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+a =     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]                 # 米
+alpha = np.deg2rad([0.0, 90.0, 90.0, 90.0, 90.0, 90.0, 90.0]) # 弧度
+d =     [0.138, 0.0, 0.31, 0.0, 0.27001, 0.0, 0.0235]        # 米
+offset = np.deg2rad([0.0, 180.0, 180.0, 180.0, 90.0, 90.0, 0.0]) # 弧度
+
+def dh_transform(a, alpha, d, theta):
+    """标准 DH 变换矩阵"""
+    ct = np.cos(theta)
+    st = np.sin(theta)
+    ca = np.cos(alpha)
+    sa = np.sin(alpha)
+
+    return np.array([
+        [ct,   -st,   0,     a],
+        [st*ca, ct*ca, -sa, -d*sa],
+        [st*sa, ct*sa,  ca,  d*ca],
+        [0,     0,     0,    1]
+    ])
 
 # ==================== 卡尔曼滤波器 ====================
 class KalmanFilter3D:
