@@ -20,6 +20,7 @@ install(PROGRAMS
   src/body_yolo.py
   src/arm_driver.py
   src/position_to_angle.py
+  src/ik_test_publisher.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

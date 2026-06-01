@@ -7,11 +7,13 @@
     <param name="angle_topic" value="/left_joint_angles"/>
     <param name="joint_status_topic" value="/left_joint_status"/>
     <param name="can_interface" value="$(var left_can_interface)"/>
+    <param name="max_command_delta" value="0.25"/>
   </node>
 
   <node pkg="demo2" exec="arm_driver.py" name="right_arm_driver" output="screen">
     <param name="angle_topic" value="/right_joint_angles"/>
     <param name="joint_status_topic" value="/right_joint_status"/>
     <param name="can_interface" value="$(var right_can_interface)"/>
+    <param name="max_command_delta" value="0.25"/>
   </node>
 </launch>

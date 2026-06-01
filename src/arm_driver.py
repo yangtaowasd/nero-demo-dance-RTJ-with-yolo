@@ -19,10 +19,12 @@ class ArmDriverNode(Node):
         self.declare_parameter("angle_topic", "/angle_topic")
         self.declare_parameter("joint_status_topic", "/joint_status_topic")
         self.declare_parameter("can_interface", "can0")
+        self.declare_parameter("max_command_delta", 0.25)
 
         self.sub_topic = self.get_parameter("angle_topic").value
         self.joint_status_topic = self.get_parameter("joint_status_topic").value
         self.can_iface = self.get_parameter("can_interface").value
+        self.max_command_delta = float(self.get_parameter("max_command_delta").value)
 
         # 关节限位，单位 rad
         self.limits = [
@@ -49,6 +51,7 @@ class ArmDriverNode(Node):
         )
 
         self.arm_ready = False
+        self.latest_joint_angles = None
         self.arm = Nero(channel=self.can_iface)
         self.arm_enable()
 
@@ -58,6 +61,7 @@ class ArmDriverNode(Node):
         self.get_logger().info(f"CAN: {self.can_iface}")
         self.get_logger().info(f"sub: {self.sub_topic}")
         self.get_logger().info(f"pub: {self.joint_status_topic}")
+        self.get_logger().info(f"max_command_delta: {self.max_command_delta}")
 
     def arm_enable(self):
         try:
@@ -90,6 +94,10 @@ class ArmDriverNode(Node):
             self.get_logger().warn(f"angle_data length error: {len(angle_data)}")
             return
 
+        if self.latest_joint_angles is None:
+            self.get_logger().warn("current joint status is not ready, skip move_j", throttle_duration_sec=1.0)
+            return
+
         for i in range(7):
             lo = self.limits[i][0]
             hi = self.limits[i][1]
@@ -101,6 +109,16 @@ class ArmDriverNode(Node):
             if angle_data[i] > hi:
                 self.get_logger().warn(f"joint {i + 1} too large, clamp")
                 angle_data[i] = hi
+
+        deltas = [abs(angle_data[i] - self.latest_joint_angles[i]) for i in range(7)]
+        max_delta = max(deltas)
+        if max_delta > self.max_command_delta:
+            self.get_logger().warn(
+                f"command jump too large, skip move_j: max_delta={max_delta:.3f}, "
+                f"limit={self.max_command_delta:.3f}, target={angle_data}, current={self.latest_joint_angles}",
+                throttle_duration_sec=1.0
+            )
+            return
 
         try:
             self.arm.move_j(angle_data)
@@ -124,8 +142,10 @@ class ArmDriverNode(Node):
                 self.get_logger().warn(f"joint_angles length error: {len(joint_angles)}")
                 return
 
+            self.latest_joint_angles = [float(x) for x in joint_angles]
+
             status_msg = Float32MultiArray()
-            status_msg.data = [float(x) for x in joint_angles]
+            status_msg.data = self.latest_joint_angles
 
             self.joint_status_pub.publish(status_msg)
 

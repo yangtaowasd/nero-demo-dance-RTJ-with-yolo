@@ -24,7 +24,8 @@ READ_INTERVAL = 0.05
 # 抖动测试参数
 # =========================
 
-SHAKE_DELTA = 0.5       # rad，正负抖动幅度
+RUN_SHAKE_TEST = False  # 上机默认只连接读角度；确认安全后再改 True
+SHAKE_DELTA = 0.1       # rad，正负抖动幅度
 SHAKE_CYCLES = 1        # 每个关节抖动次数
 MOVE_WAIT = 2.0         # 每次运动后等待时间，太短容易 REACH_TARGET_POS_FAILED
 
@@ -403,16 +404,20 @@ def main():
         # 为了安全，先 left 再 right。
         # 每个臂每次只动一个关节，不让 7 个关节同时大幅动作。
 
-        print("")
-        print("start left arm shake test")
-        shake_one_arm(left_robot, "left", left_start)
+        if RUN_SHAKE_TEST:
+            print("")
+            print("start left arm shake test")
+            shake_one_arm(left_robot, "left", left_start)
 
-        print("")
-        print("start right arm shake test")
-        shake_one_arm(right_robot, "right", right_start)
+            print("")
+            print("start right arm shake test")
+            shake_one_arm(right_robot, "right", right_start)
 
-        print("")
-        print("both arms shake test finished")
+            print("")
+            print("both arms shake test finished")
+        else:
+            print("")
+            print("RUN_SHAKE_TEST is False, skip shake test")
 
     except KeyboardInterrupt:
         print("")
