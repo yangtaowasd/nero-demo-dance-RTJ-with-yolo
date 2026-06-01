@@ -100,7 +100,21 @@ class BodyPoseNode(Node):
         self.declare_parameter('body_pose', '/body_pose')
         self.declare_parameter('show_gui', True)
         self.declare_parameter('history_size', 5)   # 历史帧数
-        self.declare_parameter('real_shoulder_width', 0.35)  # 米
+        self.declare_parameter('real_shoulder_width', 0.40)  # 米，一般成人肩宽估计值
+        self.declare_parameter('real_upper_arm_length', 0.30)  # 米，肩到肘
+        self.declare_parameter('real_forearm_length', 0.26)  # 米，肘到腕
+        self.declare_parameter('real_torso_length', 0.50)  # 米，肩到髋
+        self.declare_parameter('real_thigh_length', 0.42)  # 米，髋到膝
+        self.declare_parameter('real_lower_leg_length', 0.43)  # 米，膝到踝
+        self.declare_parameter('real_head_length', 0.28)  # 米，肩中心到头部关键点
+        self.declare_parameter('upper_body_same_depth', True)  # 5~12 默认按同一身体平面估计
+        self.declare_parameter('arm_depth_mode', 'projected')  # projected: 按图像段长判断手臂深度
+        self.declare_parameter('camera_fx', 0.0)  # 像素，<=0 时自动估计
+        self.declare_parameter('camera_fy', 0.0)  # 像素，<=0 时自动估计
+        self.declare_parameter('camera_cx', 0.0)  # 像素，<=0 时使用图像中心
+        self.declare_parameter('camera_cy', 0.0)  # 像素，<=0 时使用图像中心
+        self.declare_parameter('min_depth', 0.2)  # 米
+        self.declare_parameter('max_depth', 3.0)  # 米
 
         model_path = self.get_parameter('model_path').value
         self.camera_id = self.get_parameter('camera_id').value
@@ -111,6 +125,20 @@ class BodyPoseNode(Node):
         self.show_gui = self.get_parameter('show_gui').value
         self.history_size = self.get_parameter('history_size').value
         self.real_shoulder_width = self.get_parameter('real_shoulder_width').value
+        self.real_upper_arm_length = float(self.get_parameter('real_upper_arm_length').value)
+        self.real_forearm_length = float(self.get_parameter('real_forearm_length').value)
+        self.real_torso_length = float(self.get_parameter('real_torso_length').value)
+        self.real_thigh_length = float(self.get_parameter('real_thigh_length').value)
+        self.real_lower_leg_length = float(self.get_parameter('real_lower_leg_length').value)
+        self.real_head_length = float(self.get_parameter('real_head_length').value)
+        self.upper_body_same_depth = bool(self.get_parameter('upper_body_same_depth').value)
+        self.arm_depth_mode = str(self.get_parameter('arm_depth_mode').value)
+        self.camera_fx = float(self.get_parameter('camera_fx').value)
+        self.camera_fy = float(self.get_parameter('camera_fy').value)
+        self.camera_cx = float(self.get_parameter('camera_cx').value)
+        self.camera_cy = float(self.get_parameter('camera_cy').value)
+        self.min_depth = float(self.get_parameter('min_depth').value)
+        self.max_depth = float(self.get_parameter('max_depth').value)
 
         # ----- 加载模型 -----
         self.get_logger().info(f"Loading model from {model_path}")
@@ -132,7 +160,7 @@ class BodyPoseNode(Node):
         self.lock = threading.Lock()
         self.latest_frame = None  
         self.latest_tracks = []              # 当前帧带ID的跟踪结果 [(tid, kpts_17x3)]
-        self.histories = {}                  # tid -> deque of body kpts (12, 3) maxlen=self.history_size
+        self.histories = {}                  # tid -> deque of body kpts (17, 3) maxlen=self.history_size
         self.running = True
 
         # ----- 发布器与定时器 -----
@@ -142,6 +170,8 @@ class BodyPoseNode(Node):
         # EMA 平滑器存储: key = (track_id, body_part_index)
         self.ema_smoothers = {}       # 存储平滑器实例
         self.prev_raw_kpts = {}       # key: (tid, i) -> 上一帧原始坐标 (x,y)
+        self.last_depth = {}          # track_id -> 上一次可用深度 z
+        self.last_point_depths = {}   # (track_id, keypoint_id) -> 上一次可用深度 z
         self.alpha_min = 0.2
         self.alpha_max = 0.6
         self.alpha_slope = 0.01      # 位移到 alpha 的斜率
@@ -211,7 +241,7 @@ class BodyPoseNode(Node):
                         self.latest_tracks = tracked
                     # 更新历史队列
                     for tid, kpts in tracked:
-                        body_kpts = kpts[self.BODY_PARTS, :].copy()  # shape (12,3)
+                        body_kpts = kpts[self.BODY_PARTS, :].copy()  # shape (17,3)
                         if tid not in self.histories:
                             self.histories[tid] = deque(maxlen=self.history_size)
                         self.histories[tid].append(body_kpts)
@@ -220,6 +250,10 @@ class BodyPoseNode(Node):
                     for tid in list(self.histories.keys()):
                         if tid not in active_ids:
                             del self.histories[tid]
+                            self.last_depth.pop(tid, None)
+                            for point_key in list(self.last_point_depths.keys()):
+                                if point_key[0] == tid:
+                                    del self.last_point_depths[point_key]
 
                     # 可选可视化
                     if self.show_gui:
@@ -230,14 +264,14 @@ class BodyPoseNode(Node):
     # ---------- 可视化 ----------
     def visualize(self, frame, tracked):
         for tid, kpts in tracked:
+            xyz = self.keypoints_to_xyz(tid, kpts, frame.shape)
             left_arm_ok = all(kpts[i][2] > self.arm_conf_thres for i in [5, 7, 9])
             right_arm_ok = all(kpts[i][2] > self.arm_conf_thres for i in [6, 8, 10])
             for i in self.BODY_PARTS:
                 x, y, conf = kpts[i]
                 if conf < 0.5: continue
-                if i in (7, 9) and not left_arm_ok: continue
-                if i in (8, 10) and not right_arm_ok: continue
                 cv2.circle(frame, (int(x), int(y)), 4, (0, 255, 0), -1)
+                self.draw_xyz_label(frame, i, int(x), int(y), xyz[i])
             for start, end in self.BODY_SKELETON:
                 if (start, end) in [(5, 7), (7, 9)] and not left_arm_ok: continue
                 if (start, end) in [(6, 8), (8, 10)] and not right_arm_ok: continue
@@ -245,8 +279,42 @@ class BodyPoseNode(Node):
                     pt1 = (int(kpts[start][0]), int(kpts[start][1]))
                     pt2 = (int(kpts[end][0]), int(kpts[end][1]))
                     cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
+            for start, end in [(5, 7), (7, 9), (6, 8), (8, 10)]:
+                self.draw_segment_distance(frame, kpts, xyz, start, end)
+            depth = xyz[5, 2] if len(xyz) > 5 else float('nan')
+            depth_text = f"ID {tid} z={depth:.2f}m" if np.isfinite(depth) else f"ID {tid} z=nan"
+            cv2.putText(frame, depth_text, (10, 30 + tid * 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2, cv2.LINE_AA)
         cv2.imshow('YOLO Pose', frame)
         cv2.waitKey(1)
+
+    def draw_xyz_label(self, frame, keypoint_id, px, py, xyz):
+        if not all(np.isfinite(v) for v in xyz):
+            text = f"{keypoint_id}: nan"
+        else:
+            text = f"{keypoint_id}: {xyz[0]:.2f},{xyz[1]:.2f},{xyz[2]:.2f}"
+
+        x = min(max(px + 6, 0), frame.shape[1] - 1)
+        y = min(max(py - 6, 12), frame.shape[0] - 1)
+        cv2.putText(frame, text, (x, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(frame, text, (x, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+
+    def draw_segment_distance(self, frame, kpts, xyz, start, end):
+        if kpts[start, 2] <= 0.5 or kpts[end, 2] <= 0.5:
+            return
+        if not (np.all(np.isfinite(xyz[start])) and np.all(np.isfinite(xyz[end]))):
+            return
+
+        dist = np.linalg.norm(xyz[start] - xyz[end])
+        mx = int((kpts[start, 0] + kpts[end, 0]) * 0.5)
+        my = int((kpts[start, 1] + kpts[end, 1]) * 0.5)
+        text = f"{start}-{end}:{dist:.2f}m"
+        cv2.putText(frame, text, (mx + 4, my + 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(frame, text, (mx + 4, my + 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1, cv2.LINE_AA)
 
     # ---------- 发布回调（20Hz）----------
     def publish_callback(self):
@@ -254,14 +322,15 @@ class BodyPoseNode(Node):
             # 深拷贝当前跟踪结果
             tracks_snapshot = [(tid, kpts.copy()) for tid, kpts in self.latest_tracks]
             histories_snapshot = {tid: list(h) for tid, h in self.histories.items()}
+            frame_shape = self.latest_frame.shape if self.latest_frame is not None else None
 
         data = []
         data.append(float(len(tracks_snapshot)))
         for tid, kpts_17 in tracks_snapshot:
-            # 获取该人的历史（12个身体点）
+            # 获取该人的历史（17个身体点）
             history = histories_snapshot.get(tid, [])
             # 对当前帧的身体点先做手臂完整性判断，不可信点用历史填充
-            body_kpts = kpts_17[self.BODY_PARTS, :].copy()  # (12,3)
+            body_kpts = kpts_17[self.BODY_PARTS, :].copy()  # (17,3)
             body_kpts = self.smooth_with_history(body_kpts, history, self.arm_conf_thres)
             # === 自适应 alpha EMA 平滑 ===
             smoothed = np.zeros_like(body_kpts)
@@ -293,45 +362,203 @@ class BodyPoseNode(Node):
                     smoothed[i, :2] = self.ema_smoothers[key].value if self.ema_smoothers[key].value is not None else current_xy
                 
                 smoothed[i, 2] = body_kpts[i, 2]  # 置信度保持不变
-            data.extend(smoothed.flatten().tolist())
-            # data.extend(body_kpts.flatten().tolist())
+            xyz = self.keypoints_to_xyz(tid, smoothed, frame_shape)
+            data.extend(xyz.flatten().tolist())
         msg = Float32MultiArray(data=data)
         self.pose_pub.publish(msg)
 
-    # def smooth_with_history(self, current_body, history, arm_thresh):
-    #     """
-    #     current_body: (12,3) 当前帧身体关键点
-    #     history: list of (12,3) arrays, 最新帧在最后
-    #     arm_thresh: 手臂完整性阈值
-    #     返回平滑后的 (12,3) 关键点
-    #     """
-    #     # 判断左右臂完整性（基于原始17点，这里我们需要肩肘腕的置信度）
-    #     # 注意：current_body中索引与BODY_PARTS对应：5肩6肩7肘8肘9腕10腕...
-    #     # 左臂：肩(索引0? 需要映射) 让我们用绝对值：左肩索引5，左肘7，左腕9
-    #     # 在body_kpts中，BODY_PARTS = [5,6,7,8,9,10,11,12,13,14,15,16]
-    #     # 所以左肩在body_kpts的索引0，右肩1，左肘2，右肘3，左腕4，右腕5
-    #     left_shoulder_idx = 0   # 对应5
-    #     right_shoulder_idx = 1  # 对应6
-    #     left_elbow_idx = 2      # 对应7
-    #     right_elbow_idx = 3     # 对应8
-    #     left_wrist_idx = 4      # 对应9
-    #     right_wrist_idx = 5     # 对应10
+    def get_camera_intrinsics(self, frame_shape):
+        if frame_shape is None:
+            width = 1280.0
+            height = 720.0
+        else:
+            height = float(frame_shape[0])
+            width = float(frame_shape[1])
 
-    #     left_arm_ok = all(current_body[i, 2] > arm_thresh for i in 
-    #                       [left_shoulder_idx, left_elbow_idx, left_wrist_idx])
-    #     right_arm_ok = all(current_body[i, 2] > arm_thresh for i in 
-    #                        [right_shoulder_idx, right_elbow_idx, right_wrist_idx])
+        # 没有标定参数时用图像宽度近似焦距，至少保证 z 能由像素比例计算出来。
+        fx = self.camera_fx if self.camera_fx > 0.0 else width
+        fy = self.camera_fy if self.camera_fy > 0.0 else fx
+        cx = self.camera_cx if self.camera_cx > 0.0 else width / 2.0
+        cy = self.camera_cy if self.camera_cy > 0.0 else height / 2.0
+        return fx, fy, cx, cy
 
-    #     smoothed = current_body.copy()
-    #     # 对肘和腕进行平滑
-    #     # 左肘(2) 左腕(4) 右肘(3) 右腕(5)
-    #     if not left_arm_ok:
-    #         smoothed[left_elbow_idx] = self.get_historical_point(left_elbow_idx, history, arm_thresh)
-    #         smoothed[left_wrist_idx] = self.get_historical_point(left_wrist_idx, history, arm_thresh)
-    #     if not right_arm_ok:
-    #         smoothed[right_elbow_idx] = self.get_historical_point(right_elbow_idx, history, arm_thresh)
-    #         smoothed[right_wrist_idx] = self.get_historical_point(right_wrist_idx, history, arm_thresh)
-    #     return smoothed
+    def estimate_depth_from_shoulders(self, tid, kpts, fx):
+        left_shoulder = kpts[5]
+        right_shoulder = kpts[6]
+        shoulders_ok = (
+            left_shoulder[2] > self.arm_conf_thres and
+            right_shoulder[2] > self.arm_conf_thres
+        )
+
+        if shoulders_ok:
+            pixel_width = np.linalg.norm(left_shoulder[:2] - right_shoulder[:2])
+            if pixel_width > 1.0:
+                z = fx * self.real_shoulder_width / pixel_width
+                z = float(np.clip(z, self.min_depth, self.max_depth))
+                self.last_depth[tid] = z
+                return z
+
+        return self.last_depth.get(tid, float('nan'))
+
+    def keypoints_to_xyz(self, tid, kpts, frame_shape):
+        fx, fy, cx, cy = self.get_camera_intrinsics(frame_shape)
+        base_z = self.estimate_depth_from_shoulders(tid, kpts, fx)
+
+        xyz = np.full((len(kpts), 3), np.nan, dtype=float)
+        if not np.isfinite(base_z):
+            return xyz
+
+        # 先给所有可见点一个基准深度，后面再用骨架长度逐点修正各自的 z。
+        for i in range(len(kpts)):
+            if kpts[i, 2] > 0.5:
+                xyz[i] = self.pixel_to_xyz(kpts[i, 0], kpts[i, 1], base_z, fx, fy, cx, cy)
+
+        for shoulder_id in (5, 6):
+            if kpts[shoulder_id, 2] > 0.5:
+                xyz[shoulder_id] = self.pixel_to_xyz(
+                    kpts[shoulder_id, 0], kpts[shoulder_id, 1], base_z, fx, fy, cx, cy
+                )
+                self.last_point_depths[(tid, shoulder_id)] = base_z
+
+        if self.upper_body_same_depth:
+            for point_id in (5, 6, 11, 12):
+                if kpts[point_id, 2] > 0.5:
+                    xyz[point_id] = self.pixel_to_xyz(
+                        kpts[point_id, 0], kpts[point_id, 1], base_z, fx, fy, cx, cy
+                    )
+                    self.last_point_depths[(tid, point_id)] = base_z
+            arm_edges = [
+                (5, 7, self.real_upper_arm_length),
+                (7, 9, self.real_forearm_length),
+                (6, 8, self.real_upper_arm_length),
+                (8, 10, self.real_forearm_length),
+            ]
+            for parent_id, child_id, length_m in arm_edges:
+                self.solve_keypoint_depth(tid, kpts, xyz, parent_id, child_id,
+                                          length_m, fx, fy, cx, cy, base_z,
+                                          depth_mode=self.arm_depth_mode)
+
+            segment_edges = [
+                (11, 13, self.real_thigh_length),
+                (13, 15, self.real_lower_leg_length),
+                (12, 14, self.real_thigh_length),
+                (14, 16, self.real_lower_leg_length),
+            ]
+        else:
+            segment_edges = [
+                (5, 7, self.real_upper_arm_length),
+                (7, 9, self.real_forearm_length),
+                (6, 8, self.real_upper_arm_length),
+                (8, 10, self.real_forearm_length),
+                (5, 11, self.real_torso_length),
+                (6, 12, self.real_torso_length),
+                (11, 13, self.real_thigh_length),
+                (13, 15, self.real_lower_leg_length),
+                (12, 14, self.real_thigh_length),
+                (14, 16, self.real_lower_leg_length),
+            ]
+
+        for parent_id, child_id, length_m in segment_edges:
+            self.solve_keypoint_depth(tid, kpts, xyz, parent_id, child_id,
+                                      length_m, fx, fy, cx, cy, base_z)
+
+        self.solve_head_depths(tid, kpts, xyz, fx, fy, cx, cy, base_z)
+        return xyz
+
+    def pixel_to_ray(self, u, v, fx, fy, cx, cy):
+        return np.array([(u - cx) / fx, (v - cy) / fy, 1.0], dtype=float)
+
+    def pixel_to_xyz(self, u, v, z, fx, fy, cx, cy):
+        ray = self.pixel_to_ray(u, v, fx, fy, cx, cy)
+        return ray * z
+
+    def solve_depth_from_parent(self, parent_xyz, child_uv, length_m,
+                                fx, fy, cx, cy, prefer_z, depth_mode='previous'):
+        ray = self.pixel_to_ray(child_uv[0], child_uv[1], fx, fy, cx, cy)
+        a = float(np.dot(ray, ray))
+        b = float(-2.0 * np.dot(ray, parent_xyz))
+        c = float(np.dot(parent_xyz, parent_xyz) - length_m ** 2)
+        disc = b ** 2 - 4.0 * a * c
+        if disc < 0.0:
+            return float(np.clip(prefer_z, self.min_depth, self.max_depth))
+
+        sqrt_disc = np.sqrt(disc)
+        candidates = [
+            (-b + sqrt_disc) / (2.0 * a),
+            (-b - sqrt_disc) / (2.0 * a),
+        ]
+        candidates = [
+            float(z) for z in candidates
+            if np.isfinite(z) and self.min_depth <= z <= self.max_depth
+        ]
+        if not candidates:
+            return float(np.clip(prefer_z, self.min_depth, self.max_depth))
+
+        if depth_mode == 'near':
+            return min(candidates)
+        if depth_mode == 'far':
+            return max(candidates)
+        if depth_mode == 'projected':
+            expected_z = self.estimate_projected_depth(parent_xyz, child_uv, length_m,
+                                                       fx, fy, cx, cy, prefer_z)
+            return min(candidates, key=lambda z: abs(z - expected_z))
+        return min(candidates, key=lambda z: abs(z - prefer_z))
+
+    def solve_keypoint_depth(self, tid, kpts, xyz, parent_id, child_id,
+                             length_m, fx, fy, cx, cy, fallback_z, depth_mode='previous'):
+        if child_id >= len(kpts) or parent_id >= len(kpts):
+            return
+        if kpts[child_id, 2] <= 0.5 or not np.all(np.isfinite(xyz[parent_id])):
+            return
+
+        prefer_z = self.last_point_depths.get((tid, child_id), xyz[parent_id, 2])
+        z = self.solve_depth_from_parent(
+            xyz[parent_id],
+            kpts[child_id, :2],
+            length_m,
+            fx, fy, cx, cy,
+            prefer_z if np.isfinite(prefer_z) else fallback_z,
+            depth_mode=depth_mode
+        )
+        xyz[child_id] = self.pixel_to_xyz(kpts[child_id, 0], kpts[child_id, 1], z, fx, fy, cx, cy)
+        self.last_point_depths[(tid, child_id)] = z
+
+    def estimate_projected_depth(self, parent_xyz, child_uv, length_m,
+                                 fx, fy, cx, cy, prefer_z):
+        same_depth_child = self.pixel_to_xyz(child_uv[0], child_uv[1],
+                                             parent_xyz[2], fx, fy, cx, cy)
+        same_depth_dist = np.linalg.norm(same_depth_child[:2] - parent_xyz[:2])
+        if same_depth_dist >= length_m * 0.95:
+            return parent_xyz[2]
+
+        dz = np.sqrt(max(length_m ** 2 - same_depth_dist ** 2, 0.0))
+        if self.arm_depth_mode == 'far':
+            return parent_xyz[2] + dz
+        if self.arm_depth_mode == 'previous':
+            near_z = parent_xyz[2] - dz
+            far_z = parent_xyz[2] + dz
+            return near_z if abs(near_z - prefer_z) <= abs(far_z - prefer_z) else far_z
+        return parent_xyz[2] - dz
+
+    def solve_head_depths(self, tid, kpts, xyz, fx, fy, cx, cy, fallback_z):
+        if not (np.all(np.isfinite(xyz[5])) and np.all(np.isfinite(xyz[6]))):
+            return
+
+        shoulder_mid = (xyz[5] + xyz[6]) * 0.5
+        for point_id in (0, 1, 2, 3, 4):
+            if kpts[point_id, 2] <= 0.5:
+                continue
+            prefer_z = self.last_point_depths.get((tid, point_id), shoulder_mid[2])
+            z = self.solve_depth_from_parent(
+                shoulder_mid,
+                kpts[point_id, :2],
+                self.real_head_length,
+                fx, fy, cx, cy,
+                prefer_z if np.isfinite(prefer_z) else fallback_z
+            )
+            xyz[point_id] = self.pixel_to_xyz(kpts[point_id, 0], kpts[point_id, 1], z, fx, fy, cx, cy)
+            self.last_point_depths[(tid, point_id)] = z
+
     def smooth_with_history(self, current_body, history, arm_thresh):
         # current_body 现在索引 = 关键点 ID
         left_arm_ok = all(current_body[i, 2] > arm_thresh for i in [5, 7, 9])
