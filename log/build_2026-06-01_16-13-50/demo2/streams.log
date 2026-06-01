@@ -1,0 +1,28 @@
+[0.011s] Invoking command in '/home/yang/demo_ws/src/demo2/build/demo2': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/yang/dobot_ws/install/servo_action:/home/yang/dobot_ws/install/dobot_moveit:/home/yang/dobot_ws/install/dobot_demo:/opt/ros/humble /usr/bin/cmake --build /home/yang/demo_ws/src/demo2/build/demo2 -- -j12 -l12
+[0.064s] Invoked command in '/home/yang/demo_ws/src/demo2/build/demo2' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/yang/dobot_ws/install/servo_action:/home/yang/dobot_ws/install/dobot_moveit:/home/yang/dobot_ws/install/dobot_demo:/opt/ros/humble /usr/bin/cmake --build /home/yang/demo_ws/src/demo2/build/demo2 -- -j12 -l12
+[0.072s] Invoking command in '/home/yang/demo_ws/src/demo2/build/demo2': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/yang/dobot_ws/install/servo_action:/home/yang/dobot_ws/install/dobot_moveit:/home/yang/dobot_ws/install/dobot_demo:/opt/ros/humble /usr/bin/cmake --install /home/yang/demo_ws/src/demo2/build/demo2
+[0.079s] -- Install configuration: ""
+[0.079s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/lib/demo2/demo.py
+[0.079s] -- Installing: /home/yang/demo_ws/src/demo2/install/demo2/lib/demo2/test.py
+[0.079s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/lib/demo2/body_yolo.py
+[0.079s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/lib/demo2/arm_driver.py
+[0.079s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/lib/demo2/position_to_angle.py
+[0.079s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/lib/demo2/arm_and_revo2.py
+[0.079s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/demo2/launch
+[0.079s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/demo2/launch/dual_arm.launch.xml
+[0.079s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/ament_index/resource_index/package_run_dependencies/demo2
+[0.079s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/ament_index/resource_index/parent_prefix_path/demo2
+[0.079s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/demo2/environment/ament_prefix_path.sh
+[0.079s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/demo2/environment/ament_prefix_path.dsv
+[0.080s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/demo2/environment/path.sh
+[0.080s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/demo2/environment/path.dsv
+[0.080s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/demo2/local_setup.bash
+[0.080s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/demo2/local_setup.sh
+[0.080s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/demo2/local_setup.zsh
+[0.080s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/demo2/local_setup.dsv
+[0.080s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/demo2/package.dsv
+[0.080s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/ament_index/resource_index/packages/demo2
+[0.080s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/demo2/cmake/demo2Config.cmake
+[0.080s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/demo2/cmake/demo2Config-version.cmake
+[0.080s] -- Up-to-date: /home/yang/demo_ws/src/demo2/install/demo2/share/demo2/package.xml
+[0.081s] Invoked command in '/home/yang/demo_ws/src/demo2/build/demo2' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/home/yang/dobot_ws/install/servo_action:/home/yang/dobot_ws/install/dobot_moveit:/home/yang/dobot_ws/install/dobot_demo:/opt/ros/humble /usr/bin/cmake --install /home/yang/demo_ws/src/demo2/build/demo2

@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="left_can_interface" default="can0"/>
+  <arg name="right_can_interface" default="can1"/>
+
+  <node pkg="demo2" exec="arm_driver.py" name="left_arm_driver" output="screen">
+    <param name="angle_topic" value="/left_joint_angles"/>
+    <param name="joint_status_topic" value="/left_joint_status"/>
+    <param name="can_interface" value="$(var left_can_interface)"/>
+  </node>
+
+  <node pkg="demo2" exec="arm_driver.py" name="right_arm_driver" output="screen">
+    <param name="angle_topic" value="/right_joint_angles"/>
+    <param name="joint_status_topic" value="/right_joint_status"/>
+    <param name="can_interface" value="$(var right_can_interface)"/>
+  </node>
+</launch>
