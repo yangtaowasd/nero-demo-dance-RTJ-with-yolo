@@ -5,7 +5,7 @@ from pyAgxArm import create_agx_arm_config, AgxArmFactory, ArmModel, NeroFW, Pip
 
 
 class Nero:
-    def __init__(self,channel):
+    def __init__(self,channel="can0"):
         # 1. 创建 Nero 配置
         self.cfg = create_agx_arm_config(
             robot=ArmModel.NERO,

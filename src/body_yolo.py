@@ -97,7 +97,7 @@ class BodyPoseNode(Node):
         self.declare_parameter('conf_thres', 0.5)
         self.declare_parameter('arm_conf_thres', 0.7)
         self.declare_parameter('use_camera_topic', False)
-        self.declare_parameter('image_topic', '/image_raw')
+        self.declare_parameter('body_pose', '/body_pose')
         self.declare_parameter('show_gui', True)
         self.declare_parameter('history_size', 5)   # 历史帧数
         self.declare_parameter('real_shoulder_width', 0.35)  # 米
@@ -107,7 +107,7 @@ class BodyPoseNode(Node):
         self.conf_thres = self.get_parameter('conf_thres').value
         self.arm_conf_thres = self.get_parameter('arm_conf_thres').value
         self.use_camera_topic = self.get_parameter('use_camera_topic').value
-        self.image_topic = self.get_parameter('image_topic').value
+        self.body_pose_topic = self.get_parameter('body_pose').value
         self.show_gui = self.get_parameter('show_gui').value
         self.history_size = self.get_parameter('history_size').value
         self.real_shoulder_width = self.get_parameter('real_shoulder_width').value
@@ -136,7 +136,7 @@ class BodyPoseNode(Node):
         self.running = True
 
         # ----- 发布器与定时器 -----
-        self.pose_pub = self.create_publisher(Float32MultiArray, '/image_raw', 10)
+        self.pose_pub = self.create_publisher(Float32MultiArray, self.body_pose_topic, 10)
         self.timer = self.create_timer(0.05, self.publish_callback)
 
         # EMA 平滑器存储: key = (track_id, body_part_index)
