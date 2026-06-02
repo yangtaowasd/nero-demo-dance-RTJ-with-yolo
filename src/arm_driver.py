@@ -20,11 +20,13 @@ class ArmDriverNode(Node):
         self.declare_parameter("joint_status_topic", "/joint_status_topic")
         self.declare_parameter("can_interface", "can0")
         self.declare_parameter("max_command_delta", 0.25)
+        self.declare_parameter("execute_motion", False)
 
         self.sub_topic = self.get_parameter("angle_topic").value
         self.joint_status_topic = self.get_parameter("joint_status_topic").value
         self.can_iface = self.get_parameter("can_interface").value
         self.max_command_delta = float(self.get_parameter("max_command_delta").value)
+        self.execute_motion = bool(self.get_parameter("execute_motion").value)
 
         # 关节限位，单位 rad
         self.limits = [
@@ -62,6 +64,7 @@ class ArmDriverNode(Node):
         self.get_logger().info(f"sub: {self.sub_topic}")
         self.get_logger().info(f"pub: {self.joint_status_topic}")
         self.get_logger().info(f"max_command_delta: {self.max_command_delta}")
+        self.get_logger().warning(f"execute_motion: {self.execute_motion}")
 
     def arm_enable(self):
         try:
@@ -92,6 +95,13 @@ class ArmDriverNode(Node):
 
         if len(angle_data) != 7:
             self.get_logger().warn(f"angle_data length error: {len(angle_data)}")
+            return
+
+        if not self.execute_motion:
+            self.get_logger().warn(
+                f"execute_motion is False, dry-run target: {angle_data}",
+                throttle_duration_sec=1.0
+            )
             return
 
         if self.latest_joint_angles is None:

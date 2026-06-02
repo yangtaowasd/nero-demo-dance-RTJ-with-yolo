@@ -203,6 +203,7 @@ class ArmPointFilterNode(Node):
             return
 
         filtered_points = {}
+        valid_points = set()
         for name, kp_id in self.target_points.items():
             raw_pos = self.get_keypoint_xyz(data, kp_id)
             if not self.is_valid_xyz(raw_pos):
@@ -213,14 +214,22 @@ class ArmPointFilterNode(Node):
             filtered_pos, valid = self.filter_one_point(name, raw_pos)
             if not valid:
                 self.get_logger().warning(f"{name} rejected by Kalman gate", throttle_duration_sec=1.0)
+                if self.filters[name].initialized:
+                    filtered_points[name] = self.filters[name].get_position()
+                continue
+            valid_points.add(name)
             filtered_points[name] = filtered_pos
 
-        if self.has_ready_points(filtered_points, self.left_arm_order):
+        if self.has_ready_points(filtered_points, self.left_arm_order) and all(
+            name in valid_points for name in self.left_arm_order
+        ):
             self.left_pub.publish(self.make_relative_arm_msg(filtered_points, self.left_arm_order))
         else:
             self.get_logger().warning("left arm keypoints are not ready", throttle_duration_sec=1.0)
 
-        if self.has_ready_points(filtered_points, self.right_arm_order):
+        if self.has_ready_points(filtered_points, self.right_arm_order) and all(
+            name in valid_points for name in self.right_arm_order
+        ):
             self.right_pub.publish(self.make_relative_arm_msg(filtered_points, self.right_arm_order))
         else:
             self.get_logger().warning("right arm keypoints are not ready", throttle_duration_sec=1.0)
@@ -229,7 +238,7 @@ class ArmPointFilterNode(Node):
 # ==================== 逆运动学求解器 ====================
 class IKSolver:
     def __init__(self, fk_func, jac_func, elbow_pos_func,
-                 joint_limits=None, damping=0.05, tol=1e-4,
+                 joint_limits=None, damping=0.05, tol=0.02,
                  max_iter=100, alpha_sec=0.1, max_step=0.05,
                  max_output_delta=0.15, logger=None):
         self.fk = fk_func
@@ -259,13 +268,22 @@ class IKSolver:
 
     def solve(self, T_target, q_init, elbow_target=None):
         q = q_init.copy()
+        target_pos = T_target[:3, 3]
+        best_q = q.copy()
+        best_err = np.linalg.norm(target_pos - self.fk(q)[:3, 3])
+        converged = False
         for i in range(self.max_iter):
             T_curr = self.fk(q)
-            pos_err = T_target[:3, 3] - T_curr[:3, 3]
-            if np.linalg.norm(pos_err) < self.tol:
+            pos_err = target_pos - T_curr[:3, 3]
+            err_norm = np.linalg.norm(pos_err)
+            if err_norm < best_err:
+                best_q = q.copy()
+                best_err = err_norm
+            if err_norm < self.tol:
+                converged = True
                 if self.logger:
                     self.logger.info(f"IK converged in {i} iterations")
-                return self.limit_output_delta(q, q_init)
+                break
 
             J = self.jacobian(q)
             J_pos = J[:3, :]
@@ -285,12 +303,21 @@ class IKSolver:
             if dq_norm > self.max_step:
                 dq = dq / dq_norm * self.max_step
 
-            q = q + dq
-            q = self.check_joint_limits(q)
+            accepted = False
+            for scale in (1.0, 0.5, 0.25, 0.1):
+                q_candidate = self.check_joint_limits(q + scale * dq)
+                candidate_err = np.linalg.norm(target_pos - self.fk(q_candidate)[:3, 3])
+                if candidate_err < err_norm:
+                    q = q_candidate
+                    accepted = True
+                    break
 
-        if self.logger:
-            self.logger.warning("IK did not converge, returning current solution")
-        return self.limit_output_delta(q, q_init)
+            if not accepted:
+                break
+
+        if not converged and self.logger:
+            self.logger.warning(f"IK did not converge, best position error: {best_err:.4f} m")
+        return self.limit_output_delta(best_q if not converged else q, q_init), converged
 
     def limit_output_delta(self, q, q_init):
         q = self.check_joint_limits(q)
@@ -321,13 +348,24 @@ class ArmIKNode(Node):
         self.declare_parameter("left_joint_status_topic", "/left_joint_status")
         self.declare_parameter("right_joint_status_topic", "/right_joint_status")
         self.declare_parameter("motion_scale", 0.7)
+        self.declare_parameter("ik_tolerance", 0.05)
+        self.declare_parameter("max_target_delta", 0.08)
+        self.declare_parameter("arm_points_are_relative", True)
+        self.declare_parameter(
+            "camera_to_robot_matrix",
+            [
+                0.0, 0.0, -1.0,
+                -1.0, 0.0, 0.0,
+                0.0, -1.0, 0.0,
+            ],
+        )
 
         # ==================== 测试专用参数 START ====================
         # test_mode=True 时，不等待真实 /left_joint_status 和 /right_joint_status。
         # 只用于离线验证 IK 输出，接真实机械臂时保持默认 False。
         self.declare_parameter("test_mode", False)
-        self.declare_parameter("test_left_initial_joints", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-        self.declare_parameter("test_right_initial_joints", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        self.declare_parameter("test_left_initial_joints", [0.3, 0.2, -0.2, 0.3, -0.1, -0.2, 0.1])
+        self.declare_parameter("test_right_initial_joints", [0.6, 0.0, -0.4, 0.0, 0.0, -0.2, 0.0])
         self.declare_parameter("test_publish_near_limits", False)
         self.declare_parameter("test_debug_log", True)
         # ==================== 测试专用参数 END ====================
@@ -339,11 +377,15 @@ class ArmIKNode(Node):
         left_joint_status = self.get_parameter("left_joint_status_topic").value
         right_joint_status = self.get_parameter("right_joint_status_topic").value
         self.motion_scale = float(self.get_parameter("motion_scale").value)
+        self.ik_tolerance = float(self.get_parameter("ik_tolerance").value)
+        self.max_target_delta = float(self.get_parameter("max_target_delta").value)
+        self.arm_points_are_relative = self.read_bool_param("arm_points_are_relative")
+        self.camera_to_robot_matrix = self.read_matrix_param("camera_to_robot_matrix")
 
         # ==================== 测试专用配置 START ====================
-        self.test_mode = bool(self.get_parameter("test_mode").value)
-        self.test_publish_near_limits = bool(self.get_parameter("test_publish_near_limits").value)
-        self.test_debug_log = bool(self.get_parameter("test_debug_log").value)
+        self.test_mode = self.read_bool_param("test_mode")
+        self.test_publish_near_limits = self.read_bool_param("test_publish_near_limits")
+        self.test_debug_log = self.read_bool_param("test_debug_log")
         self.test_left_initial_joints = self.read_test_joints("test_left_initial_joints")
         self.test_right_initial_joints = self.read_test_joints("test_right_initial_joints")
         # ==================== 测试专用配置 END ====================
@@ -392,6 +434,7 @@ class ArmIKNode(Node):
             elbow_pos_func=my_elbow,
             joint_limits=limits,
             damping=0.1,
+            tol=self.ik_tolerance,
             max_iter=200,
             logger=self.get_logger()
         )
@@ -401,6 +444,7 @@ class ArmIKNode(Node):
             elbow_pos_func=my_elbow,
             joint_limits=limits,
             damping=0.1,
+            tol=self.ik_tolerance,
             max_iter=200,
             logger=self.get_logger()
         )
@@ -441,6 +485,11 @@ class ArmIKNode(Node):
             Float32MultiArray, right_joint_status, self.right_joint_status_callback, 10
         )
         self.get_logger().info("arm_ik_node started with DH model")
+        self.get_logger().info(
+            f"IK arm_points_are_relative={self.arm_points_are_relative}, "
+            f"ik_tolerance={self.ik_tolerance}, max_target_delta={self.max_target_delta}, "
+            f"camera_to_robot_matrix={self.camera_to_robot_matrix.tolist()}"
+        )
 
     # ==================== 测试专用函数 START ====================
     def read_test_joints(self, param_name):
@@ -450,17 +499,32 @@ class ArmIKNode(Node):
             return np.zeros(7)
         return np.asarray(joints, dtype=float)
 
-    def get_test_seed(self, side):
-        if side == "left":
-            return self.test_left_initial_joints.copy()
-        return self.test_right_initial_joints.copy()
+    def read_matrix_param(self, param_name):
+        values = list(self.get_parameter(param_name).value)
+        if len(values) != 9:
+            self.get_logger().warning(f"{param_name} length error, use identity: {values}")
+            return np.eye(3)
+        return np.asarray(values, dtype=float).reshape(3, 3)
 
-    def maybe_log_test_ik(self, side, shoulder, elbow, wrist, target, q_result):
+    def read_bool_param(self, param_name):
+        value = self.get_parameter(param_name).value
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "on")
+        return bool(value)
+
+    def maybe_log_test_ik(self, side, shoulder, elbow, wrist,
+                          elbow_rel, wrist_rel, elbow_delta, wrist_delta,
+                          target, q_result, converged, pos_error):
         if not (self.test_mode and self.test_debug_log):
             return
         self.get_logger().info(
             f"TEST {side}: shoulder={shoulder.tolist()}, elbow={elbow.tolist()}, "
-            f"wrist={wrist.tolist()}, target={target.tolist()}, q={q_result.tolist()}"
+            f"wrist={wrist.tolist()}, elbow_rel={elbow_rel.tolist()}, "
+            f"wrist_rel={wrist_rel.tolist()}, elbow_robot_delta={elbow_delta.tolist()}, "
+            f"wrist_robot_delta={wrist_delta.tolist()}, target={target.tolist()}, "
+            f"q={q_result.tolist()}, converged={converged}, pos_error={pos_error:.4f}"
         )
     # ==================== 测试专用函数 END ====================
 
@@ -480,19 +544,42 @@ class ArmIKNode(Node):
             self.get_logger().info(f"{side} home tcp set to {home_tcp.tolist()}")
         return home_tcp
 
+    def get_relative_arm_points(self, shoulder, elbow, wrist):
+        """
+        /left_arm 和 /right_arm 默认已经是以肩膀为原点的相对坐标。
+        如果外部测试节点直接发绝对坐标，可以把 arm_points_are_relative 设为 False。
+        """
+        if self.arm_points_are_relative:
+            return elbow, wrist
+        return elbow - shoulder, wrist - shoulder
+
+    def limit_target_delta(self, delta):
+        if self.max_target_delta <= 0.0:
+            return delta
+        norm = np.linalg.norm(delta)
+        if norm <= self.max_target_delta:
+            return delta
+        return delta / norm * self.max_target_delta
+
     def build_target_pose(self, shoulder, elbow, wrist, home_tcp):
         """
-        肩肘腕输入是人体相对肩膀的坐标；IK 目标使用机器人 home TCP 加相对位移。
+        肩肘腕输入默认是相机坐标下的人体相对肩膀坐标。
+        先映射到机器人坐标，再以 home TCP 为中心生成 IK 目标。
         """
-        wrist_delta = wrist - shoulder
-        elbow_delta = elbow - shoulder
+        elbow_rel, wrist_rel = self.get_relative_arm_points(shoulder, elbow, wrist)
+        wrist_delta = self.limit_target_delta(
+            self.motion_scale * (self.camera_to_robot_matrix @ wrist_rel)
+        )
+        elbow_delta = self.limit_target_delta(
+            self.motion_scale * (self.camera_to_robot_matrix @ elbow_rel)
+        )
 
-        target_wrist = home_tcp + self.motion_scale * wrist_delta
-        target_elbow = home_tcp + self.motion_scale * elbow_delta
+        target_wrist = home_tcp + wrist_delta
+        target_elbow = home_tcp + elbow_delta
 
         T = np.eye(4)
         T[:3, 3] = target_wrist
-        return T, target_elbow
+        return T, target_elbow, elbow_rel, wrist_rel, elbow_delta, wrist_delta
 
     def left_callback(self, msg):
         if not self.left_joint_ready:
@@ -507,18 +594,23 @@ class ArmIKNode(Node):
         e = np.array(msg.data[3:6])
         w = np.array(msg.data[6:9])
 
-        q_seed = self.get_test_seed("left") if self.test_mode else self.q_left
+        q_seed = self.q_left
         home_tcp = self.get_home_tcp("left", q_seed, self.ik_solver_left)
-        T_target, elbow_target = self.build_target_pose(s, e, w, home_tcp)
-        q_result = self.ik_solver_left.solve(T_target, q_seed, elbow_target=elbow_target)
-        self.maybe_log_test_ik("left", s, e, w, T_target[:3, 3], q_result)
+        T_target, elbow_target, e_rel, w_rel, e_delta, w_delta = self.build_target_pose(s, e, w, home_tcp)
+        q_result, converged = self.ik_solver_left.solve(T_target, q_seed, elbow_target=elbow_target)
+        pos_error = np.linalg.norm(T_target[:3, 3] - self.ik_solver_left.fk(q_result)[:3, 3])
+        self.maybe_log_test_ik("left", s, e, w, e_rel, w_rel, e_delta, w_delta,
+                               T_target[:3, 3], q_result, converged, pos_error)
+
+        if not converged and not self.test_mode:
+            self.get_logger().warning("left IK did not converge, skip publish", throttle_duration_sec=1.0)
+            return
 
         if self.is_near_joint_limits(q_result) and not self.test_publish_near_limits:
             self.get_logger().warning(f"left IK near joint limits, skip publish: {q_result.tolist()}")
             return
 
-        if not self.test_mode:
-            self.q_left = q_result
+        self.q_left = q_result
 
         joint_msg = Float32MultiArray()
         joint_msg.data = q_result.tolist()
@@ -537,18 +629,23 @@ class ArmIKNode(Node):
         e = np.array(msg.data[3:6])
         w = np.array(msg.data[6:9])
 
-        q_seed = self.get_test_seed("right") if self.test_mode else self.q_right
+        q_seed = self.q_right
         home_tcp = self.get_home_tcp("right", q_seed, self.ik_solver_right)
-        T_target, elbow_target = self.build_target_pose(s, e, w, home_tcp)
-        q_result = self.ik_solver_right.solve(T_target, q_seed, elbow_target=elbow_target)
-        self.maybe_log_test_ik("right", s, e, w, T_target[:3, 3], q_result)
+        T_target, elbow_target, e_rel, w_rel, e_delta, w_delta = self.build_target_pose(s, e, w, home_tcp)
+        q_result, converged = self.ik_solver_right.solve(T_target, q_seed, elbow_target=elbow_target)
+        pos_error = np.linalg.norm(T_target[:3, 3] - self.ik_solver_right.fk(q_result)[:3, 3])
+        self.maybe_log_test_ik("right", s, e, w, e_rel, w_rel, e_delta, w_delta,
+                               T_target[:3, 3], q_result, converged, pos_error)
+
+        if not converged and not self.test_mode:
+            self.get_logger().warning("right IK did not converge, skip publish", throttle_duration_sec=1.0)
+            return
 
         if self.is_near_joint_limits(q_result) and not self.test_publish_near_limits:
             self.get_logger().warning(f"right IK near joint limits, skip publish: {q_result.tolist()}")
             return
 
-        if not self.test_mode:
-            self.q_right = q_result
+        self.q_right = q_result
 
         joint_msg = Float32MultiArray()
         joint_msg.data = q_result.tolist()

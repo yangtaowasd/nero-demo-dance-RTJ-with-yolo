@@ -109,13 +109,17 @@ class BodyPoseNode(Node):
         self.declare_parameter('real_lower_leg_length', 0.43)  # 米，膝到踝
         self.declare_parameter('real_head_length', 0.25)  # 米，肩中心到头部关键点
         self.declare_parameter('upper_body_same_depth', True)  # 5~12 默认按同一身体平面估计
-        self.declare_parameter('arm_depth_mode', 'projected')  # projected: 按图像段长判断手臂深度
+        self.declare_parameter('arm_depth_mode', 'near')  # near: 肩->肘->腕逐段更靠近相机
         self.declare_parameter('camera_fx', 0.0)  # 像素，<=0 时自动估计
         self.declare_parameter('camera_fy', 0.0)  # 像素，<=0 时自动估计
         self.declare_parameter('camera_cx', 0.0)  # 像素，<=0 时使用图像中心
         self.declare_parameter('camera_cy', 0.0)  # 像素，<=0 时使用图像中心
         self.declare_parameter('min_depth', 0.2)  # 米
         self.declare_parameter('max_depth', 3.0)  # 米
+        self.declare_parameter('depth_smoothing_alpha', 0.2)
+        self.declare_parameter('max_depth_jump', 0.25)  # 米，单帧深度跳变超过此值则沿用上一帧
+        self.declare_parameter('point_depth_smoothing_alpha', 0.35)
+        self.declare_parameter('max_point_depth_jump', 0.12)  # 米，肘/腕单帧深度跳变限制
 
         model_path = self.get_parameter('model_path').value
         self.camera_id = self.get_parameter('camera_id').value
@@ -141,6 +145,10 @@ class BodyPoseNode(Node):
         self.camera_cy = float(self.get_parameter('camera_cy').value)
         self.min_depth = float(self.get_parameter('min_depth').value)
         self.max_depth = float(self.get_parameter('max_depth').value)
+        self.depth_smoothing_alpha = float(self.get_parameter('depth_smoothing_alpha').value)
+        self.max_depth_jump = float(self.get_parameter('max_depth_jump').value)
+        self.point_depth_smoothing_alpha = float(self.get_parameter('point_depth_smoothing_alpha').value)
+        self.max_point_depth_jump = float(self.get_parameter('max_point_depth_jump').value)
 
         # ----- 加载模型 -----
         self.get_logger().info(f"Loading model from {model_path}")
@@ -395,8 +403,19 @@ class BodyPoseNode(Node):
         if shoulders_ok:
             pixel_width = np.linalg.norm(left_shoulder[:2] - right_shoulder[:2])
             if pixel_width > 1.0:
-                z = fx * self.real_shoulder_width / pixel_width
-                z = float(np.clip(z, self.min_depth, self.max_depth))
+                raw_z = fx * self.real_shoulder_width / pixel_width
+                raw_z = float(np.clip(raw_z, self.min_depth, self.max_depth))
+
+                last_z = self.last_depth.get(tid)
+                if last_z is not None and np.isfinite(last_z):
+                    if abs(raw_z - last_z) > self.max_depth_jump:
+                        z = last_z
+                    else:
+                        alpha = np.clip(self.depth_smoothing_alpha, 0.0, 1.0)
+                        z = alpha * raw_z + (1.0 - alpha) * last_z
+                else:
+                    z = raw_z
+
                 self.last_depth[tid] = z
                 return z
 
@@ -435,10 +454,11 @@ class BodyPoseNode(Node):
                 (6, 8, self.real_upper_arm_length),
                 (8, 10, self.real_forearm_length),
             ]
-            for parent_id, child_id, length_m in arm_edges:
-                self.solve_keypoint_depth(tid, kpts, xyz, parent_id, child_id,
-                                          length_m, fx, fy, cx, cy, base_z,
-                                          depth_mode=self.arm_depth_mode)
+            if self.arm_depth_mode != 'flat':
+                for parent_id, child_id, length_m in arm_edges:
+                    self.solve_keypoint_depth(tid, kpts, xyz, parent_id, child_id,
+                                              length_m, fx, fy, cx, cy, base_z,
+                                              depth_mode=self.arm_depth_mode)
 
             segment_edges = [
                 (11, 13, self.real_thigh_length),
@@ -513,7 +533,8 @@ class BodyPoseNode(Node):
         if kpts[child_id, 2] <= 0.5 or not np.all(np.isfinite(xyz[parent_id])):
             return
 
-        prefer_z = self.last_point_depths.get((tid, child_id), xyz[parent_id, 2])
+        previous_z = self.last_point_depths.get((tid, child_id))
+        prefer_z = previous_z if previous_z is not None else xyz[parent_id, 2]
         z = self.solve_depth_from_parent(
             xyz[parent_id],
             kpts[child_id, :2],
@@ -522,6 +543,13 @@ class BodyPoseNode(Node):
             prefer_z if np.isfinite(prefer_z) else fallback_z,
             depth_mode=depth_mode
         )
+
+        if previous_z is not None and np.isfinite(previous_z):
+            if abs(z - previous_z) > self.max_point_depth_jump:
+                z = previous_z + np.sign(z - previous_z) * self.max_point_depth_jump
+            alpha = np.clip(self.point_depth_smoothing_alpha, 0.0, 1.0)
+            z = alpha * z + (1.0 - alpha) * previous_z
+
         xyz[child_id] = self.pixel_to_xyz(kpts[child_id, 0], kpts[child_id, 1], z, fx, fy, cx, cy)
         self.last_point_depths[(tid, child_id)] = z
 
