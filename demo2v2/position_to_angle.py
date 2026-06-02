@@ -119,7 +119,7 @@ class ArmPointFilterV2(Node):
     def __init__(self):
         super().__init__("arm_point_filter_v2")
 
-        self.declare_parameter("input_topic", "/body_pose")
+        self.declare_parameter("input_topic", "/arm_pose")
         self.declare_parameter("left_output_topic", "/left_arm")
         self.declare_parameter("right_output_topic", "/right_arm")
         self.declare_parameter("dt", 0.05)
@@ -141,15 +141,15 @@ class ArmPointFilterV2(Node):
         self.max_missing_frames = int(self.get_parameter("max_missing_frames").value)
         self.publish_predicted_points = read_bool(self, "publish_predicted_points")
 
-        self.num_keypoints = 17
+        self.num_keypoints = 6
         self.expected_len = 1 + self.num_keypoints * 3
         self.target_points = {
-            "left_shoulder": 5,
-            "right_shoulder": 6,
-            "left_elbow": 7,
-            "right_elbow": 8,
-            "left_wrist": 9,
-            "right_wrist": 10,
+            "left_shoulder": 0,
+            "left_elbow": 1,
+            "left_wrist": 2,
+            "right_shoulder": 3,
+            "right_elbow": 4,
+            "right_wrist": 5,
         }
         self.left_order = ["left_shoulder", "left_elbow", "left_wrist"]
         self.right_order = ["right_shoulder", "right_elbow", "right_wrist"]
@@ -234,7 +234,7 @@ class ArmPointFilterV2(Node):
             return
         if len(data) != self.expected_len:
             self.get_logger().warning(
-                f"body pose length error: {len(data)}, expected={self.expected_len}",
+                f"arm pose length error: {len(data)}, expected={self.expected_len}",
                 throttle_duration_sec=1.0,
             )
             return

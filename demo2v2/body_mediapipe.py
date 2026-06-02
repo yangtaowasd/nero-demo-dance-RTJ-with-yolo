@@ -28,15 +28,14 @@ class AdaptiveEMAFilter:
         return self.value.copy()
 
 
-class BodyPoseNode(Node):
+class ArmMediaPipeNode(Node):
     def __init__(self):
-        super().__init__("mediapipe_body_pose_node")
+        super().__init__("arm_mediapipe_node")
 
-        self.declare_parameter("model_path", "")
         self.declare_parameter("camera_id", 0)
         self.declare_parameter("use_camera_topic", False)
         self.declare_parameter("image_topic", "/camera/image_raw")
-        self.declare_parameter("body_pose", "/body_pose")
+        self.declare_parameter("arm_pose", "/arm_pose")
         self.declare_parameter("show_gui", True)
         self.declare_parameter("history_size", 5)
         self.declare_parameter("arm_conf_thres", 0.6)
@@ -49,7 +48,7 @@ class BodyPoseNode(Node):
         self.camera_id = int(self.get_parameter("camera_id").value)
         self.use_camera_topic = bool(self.get_parameter("use_camera_topic").value)
         self.image_topic = self.get_parameter("image_topic").value
-        self.body_pose_topic = self.get_parameter("body_pose").value
+        self.arm_pose_topic = self.get_parameter("arm_pose").value
         self.show_gui = bool(self.get_parameter("show_gui").value)
         self.history_size = int(self.get_parameter("history_size").value)
         self.arm_conf_thres = float(self.get_parameter("arm_conf_thres").value)
@@ -72,28 +71,13 @@ class BodyPoseNode(Node):
             ),
         )
 
-        self.coco17_to_mediapipe = [
-            0,   # nose
-            2,   # left eye
-            5,   # right eye
-            7,   # left ear
-            8,   # right ear
-            11,  # left shoulder
-            12,  # right shoulder
-            13,  # left elbow
-            14,  # right elbow
-            15,  # left wrist
-            16,  # right wrist
-            23,  # left hip
-            24,  # right hip
-            25,  # left knee
-            26,  # right knee
-            27,  # left ankle
-            28,  # right ankle
-        ]
-        self.body_skeleton = [
-            (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),
-            (5, 11), (6, 12), (11, 12),
+        self.arm_landmarks = [
+            ("left_shoulder", 11),
+            ("left_elbow", 13),
+            ("left_wrist", 15),
+            ("right_shoulder", 12),
+            ("right_elbow", 14),
+            ("right_wrist", 16),
         ]
 
         self.lock = threading.Lock()
@@ -107,7 +91,7 @@ class BodyPoseNode(Node):
         self.alpha_max = 0.6
         self.alpha_slope = 2.0
 
-        self.pose_pub = self.create_publisher(Float32MultiArray, self.body_pose_topic, 10)
+        self.pose_pub = self.create_publisher(Float32MultiArray, self.arm_pose_topic, 10)
         self.timer = self.create_timer(0.05, self.publish_callback)
 
         if self.use_camera_topic:
@@ -132,7 +116,7 @@ class BodyPoseNode(Node):
 
         self.infer_thread = threading.Thread(target=self.infer_loop, daemon=True)
         self.infer_thread.start()
-        self.get_logger().info("MediaPipe body pose node started")
+        self.get_logger().info("MediaPipe arm pose node started")
 
     def image_callback(self, img_msg):
         try:
@@ -166,7 +150,7 @@ class BodyPoseNode(Node):
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 rgb.flags.writeable = False
                 result = self.pose.process(rgb)
-                kpts = self.result_to_coco17_world(result)
+                kpts = self.result_to_arm_world(result)
                 if kpts is not None:
                     self.histories.append(kpts.copy())
                 with self.lock:
@@ -177,15 +161,15 @@ class BodyPoseNode(Node):
                 self.get_logger().error(f"MediaPipe inference error: {exc}")
                 time.sleep(0.02)
 
-    def result_to_coco17_world(self, result):
+    def result_to_arm_world(self, result):
         if not result.pose_world_landmarks:
             return None
 
         world = result.pose_world_landmarks.landmark
         image = result.pose_landmarks.landmark if result.pose_landmarks else None
-        kpts = np.full((17, 4), np.nan, dtype=float)
+        kpts = np.full((len(self.arm_landmarks), 4), np.nan, dtype=float)
 
-        for coco_id, mp_id in enumerate(self.coco17_to_mediapipe):
+        for arm_id, (_, mp_id) in enumerate(self.arm_landmarks):
             world_lm = world[mp_id]
             visibility = float(getattr(world_lm, "visibility", 1.0))
             presence = float(getattr(world_lm, "presence", visibility))
@@ -196,10 +180,10 @@ class BodyPoseNode(Node):
             if confidence < 0.05:
                 continue
 
-            kpts[coco_id, 0] = self.world_scale * float(world_lm.x)
-            kpts[coco_id, 1] = self.world_scale * float(world_lm.y)
-            kpts[coco_id, 2] = self.world_scale * self.z_sign * float(world_lm.z)
-            kpts[coco_id, 3] = confidence
+            kpts[arm_id, 0] = self.world_scale * float(world_lm.x)
+            kpts[arm_id, 1] = self.world_scale * float(world_lm.y)
+            kpts[arm_id, 2] = self.world_scale * self.z_sign * float(world_lm.z)
+            kpts[arm_id, 3] = confidence
 
         return self.smooth_with_history(kpts)
 
@@ -262,7 +246,7 @@ class BodyPoseNode(Node):
         self.pose_pub.publish(Float32MultiArray(data=data))
 
     def arm_points_ready(self, kpts):
-        for idx in (5, 6, 7, 8, 9, 10):
+        for idx in range(len(self.arm_landmarks)):
             if not np.all(np.isfinite(kpts[idx, :3])) or kpts[idx, 3] < self.arm_conf_thres:
                 return False
         return True
@@ -275,7 +259,7 @@ class BodyPoseNode(Node):
                 self.mp_pose.POSE_CONNECTIONS,
             )
         if kpts is not None:
-            text = "MediaPipe world xyz -> /body_pose"
+            text = "MediaPipe arm world xyz -> /arm_pose"
             cv2.putText(
                 frame,
                 text,
@@ -301,7 +285,7 @@ class BodyPoseNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = BodyPoseNode()
+    node = ArmMediaPipeNode()
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

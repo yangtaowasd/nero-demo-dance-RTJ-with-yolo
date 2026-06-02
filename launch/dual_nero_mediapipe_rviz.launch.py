@@ -59,12 +59,6 @@ def generate_launch_description():
         "config",
         "dual_nero.rviz",
     ])
-    model_path = PathJoinSubstitution([
-        FindPackageShare("demo2v2"),
-        "model",
-        "yolo26s-pose.pt",
-    ])
-
     return LaunchDescription([
         DeclareLaunchArgument("camera_id", default_value="0"),
         DeclareLaunchArgument("show_gui", default_value="true"),
@@ -74,18 +68,16 @@ def generate_launch_description():
         *state_publisher("right", -0.35, -1.5707963, 1.5707963),
         Node(
             package="demo2v2",
-            executable="body_yolo",
-            name="yolo_body_pose_node",
+            executable="arm_mediapipe",
+            name="arm_mediapipe_node",
             output="screen",
             parameters=[{
-                "model_path": model_path,
                 "camera_id": LaunchConfiguration("camera_id"),
                 "use_camera_topic": False,
-                "body_pose": "/body_pose",
+                "arm_pose": "/arm_pose",
                 "show_gui": LaunchConfiguration("show_gui"),
                 "world_scale": 1.0,
                 "z_sign": -1.0,
-                "arm_depth_mode": "near",
             }],
         ),
         Node(
@@ -95,6 +87,7 @@ def generate_launch_description():
             output="screen",
             parameters=[{
                 "backend": "rviz_joint_state",
+                "input_topic": "/arm_pose",
                 "motion_scale": LaunchConfiguration("motion_scale"),
                 "max_joint_step": LaunchConfiguration("max_joint_step"),
                 "left_joint_state_topic": "/left/joint_states",

@@ -24,7 +24,6 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), package_files('launch')),
         (os.path.join('share', package_name, 'config'), package_files('config')),
-        (os.path.join('share', package_name, 'model'), package_files('model')),
         (os.path.join('share', package_name, 'urdf'), package_files('urdf')),
     ],
     install_requires=['setuptools'],
@@ -40,7 +39,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'body_yolo = demo2v2.body_yolo:main',
+            'arm_mediapipe = demo2v2.body_mediapipe:main',
             'position_to_angle = demo2v2.position_to_angle:main',
             'arm_driver = demo2v2.arm_driver:main',
         ],

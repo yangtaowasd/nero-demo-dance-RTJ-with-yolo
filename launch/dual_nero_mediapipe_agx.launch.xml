@@ -1,13 +1,12 @@
 <?xml version="1.0"?>
 <launch>
   <arg name="start_agx_ctrl" default="false"/>
-  <arg name="start_body_pose" default="true"/>
+  <arg name="start_arm_pose" default="true"/>
   <arg name="start_position_to_angle" default="true"/>
   <arg name="use_camera_topic" default="false"/>
   <arg name="camera_id" default="0"/>
   <arg name="image_topic" default="/camera/image_raw"/>
   <arg name="show_gui" default="true"/>
-  <arg name="model_path" default="$(find-pkg-share demo2v2)/model/yolo26s-pose.pt"/>
   <arg name="mediapipe_world_scale" default="1.0"/>
   <arg name="mediapipe_z_sign" default="-1.0"/>
 
@@ -25,16 +24,14 @@
   <arg name="left_camera_to_robot_matrix" default="[0.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0]"/>
   <arg name="right_camera_to_robot_matrix" default="[0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, -1.0, 0.0]"/>
 
-  <node pkg="demo2v2" exec="body_yolo" name="yolo_body_pose_node" output="screen" if="$(var start_body_pose)">
-    <param name="model_path" value="$(var model_path)"/>
+  <node pkg="demo2v2" exec="arm_mediapipe" name="arm_mediapipe_node" output="screen" if="$(var start_arm_pose)">
     <param name="camera_id" value="$(var camera_id)"/>
     <param name="use_camera_topic" value="$(var use_camera_topic)"/>
     <param name="image_topic" value="$(var image_topic)"/>
-    <param name="body_pose" value="/body_pose"/>
+    <param name="arm_pose" value="/arm_pose"/>
     <param name="show_gui" value="$(var show_gui)"/>
     <param name="world_scale" value="$(var mediapipe_world_scale)"/>
     <param name="z_sign" value="$(var mediapipe_z_sign)"/>
-    <param name="arm_depth_mode" value="near"/>
   </node>
 
   <include file="$(find-pkg-share agx_arm_ctrl)/launch/start_single_agx_arm.launch.py" if="$(var start_agx_ctrl)">
@@ -58,6 +55,7 @@
   </include>
 
   <node pkg="demo2v2" exec="position_to_angle" name="position_to_angle" output="screen" if="$(var start_position_to_angle)">
+    <param name="input_topic" value="/arm_pose"/>
     <param name="motion_scale" value="$(var motion_scale)"/>
     <param name="max_target_delta" value="$(var max_target_delta)"/>
     <param name="min_command_interval" value="$(var min_command_interval)"/>

@@ -6,6 +6,3 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .colcon/
-
-# Keep heavy model weights local unless intentionally added.
-model/*.pt
