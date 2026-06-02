@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="start_agx_ctrl" default="false"/>
+  <arg name="start_body_pose" default="true"/>
+  <arg name="start_position_to_angle" default="true"/>
+  <arg name="use_camera_topic" default="false"/>
+  <arg name="camera_id" default="0"/>
+  <arg name="image_topic" default="/camera/image_raw"/>
+  <arg name="show_gui" default="true"/>
+  <arg name="model_path" default="$(find-pkg-share demo2v2)/model/yolo26s-pose.pt"/>
+
+  <arg name="left_can_interface" default="can0"/>
+  <arg name="right_can_interface" default="can1"/>
+  <arg name="agx_control_enabled" default="false"/>
+  <arg name="agx_auto_enable" default="true"/>
+  <arg name="agx_speed_percent" default="30"/>
+  <arg name="agx_pub_rate" default="200"/>
+
+  <arg name="motion_scale" default="0.7"/>
+  <arg name="max_target_delta" default="0.08"/>
+  <arg name="min_command_interval" default="0.1"/>
+  <arg name="max_missing_frames" default="8"/>
+  <arg name="left_camera_to_robot_matrix" default="[0.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0]"/>
+  <arg name="right_camera_to_robot_matrix" default="[0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, -1.0, 0.0]"/>
+
+  <node pkg="demo2v2" exec="body_yolo" name="yolo_body_pose_node" output="screen" if="$(var start_body_pose)">
+    <param name="model_path" value="$(var model_path)"/>
+    <param name="camera_id" value="$(var camera_id)"/>
+    <param name="use_camera_topic" value="$(var use_camera_topic)"/>
+    <param name="image_topic" value="$(var image_topic)"/>
+    <param name="body_pose" value="/body_pose"/>
+    <param name="show_gui" value="$(var show_gui)"/>
+    <param name="arm_depth_mode" value="near"/>
+  </node>
+
+  <include file="$(find-pkg-share agx_arm_ctrl)/launch/start_single_agx_arm.launch.py" if="$(var start_agx_ctrl)">
+    <arg name="namespace" value="left"/>
+    <arg name="can_port" value="$(var left_can_interface)"/>
+    <arg name="arm_type" value="nero"/>
+    <arg name="auto_enable" value="$(var agx_auto_enable)"/>
+    <arg name="speed_percent" value="$(var agx_speed_percent)"/>
+    <arg name="pub_rate" value="$(var agx_pub_rate)"/>
+    <arg name="control_enabled" value="$(var agx_control_enabled)"/>
+  </include>
+
+  <include file="$(find-pkg-share agx_arm_ctrl)/launch/start_single_agx_arm.launch.py" if="$(var start_agx_ctrl)">
+    <arg name="namespace" value="right"/>
+    <arg name="can_port" value="$(var right_can_interface)"/>
+    <arg name="arm_type" value="nero"/>
+    <arg name="auto_enable" value="$(var agx_auto_enable)"/>
+    <arg name="speed_percent" value="$(var agx_speed_percent)"/>
+    <arg name="pub_rate" value="$(var agx_pub_rate)"/>
+    <arg name="control_enabled" value="$(var agx_control_enabled)"/>
+  </include>
+
+  <node pkg="demo2v2" exec="position_to_angle" name="position_to_angle" output="screen" if="$(var start_position_to_angle)">
+    <param name="motion_scale" value="$(var motion_scale)"/>
+    <param name="max_target_delta" value="$(var max_target_delta)"/>
+    <param name="min_command_interval" value="$(var min_command_interval)"/>
+    <param name="max_missing_frames" value="$(var max_missing_frames)"/>
+    <param name="left_camera_to_robot_matrix" value="$(var left_camera_to_robot_matrix)"/>
+    <param name="right_camera_to_robot_matrix" value="$(var right_camera_to_robot_matrix)"/>
+    <param name="left_tcp_feedback_topic" value="/left/feedback/tcp_pose"/>
+    <param name="right_tcp_feedback_topic" value="/right/feedback/tcp_pose"/>
+    <param name="left_move_p_topic" value="/left/control/move_p"/>
+    <param name="right_move_p_topic" value="/right/control/move_p"/>
+  </node>
+</launch>
