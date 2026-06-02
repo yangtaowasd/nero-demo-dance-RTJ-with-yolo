@@ -31,7 +31,7 @@ setup(
     zip_safe=True,
     maintainer='yang',
     maintainer_email='yang@todo.todo',
-    description='YOLO body pose to mirrored dual Nero arm control using AGX SDK topics.',
+    description='MediaPipe body pose to mirrored dual Nero arm control using AGX SDK topics.',
     license='Apache-2.0',
     extras_require={
         'test': [

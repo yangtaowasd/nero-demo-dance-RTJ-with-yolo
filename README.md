@@ -1,10 +1,10 @@
 # demo2v2
 
-YOLO body pose to mirrored dual Nero arm control.
+MediaPipe body pose to mirrored dual Nero arm control.
 
 ## Flow
 
-1. `body_yolo`: camera or image topic to `/body_pose`.
+1. `body_yolo`: camera or image topic to MediaPipe world landmarks on `/body_pose`.
 2. `position_to_angle`: `/body_pose` to filtered `/left_arm` and `/right_arm`, then AGX `move_p` pose commands.
 3. `agx_arm_ctrl`: AGX SDK ROS control topics for Nero arms.
 

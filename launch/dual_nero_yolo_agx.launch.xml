@@ -8,6 +8,8 @@
   <arg name="image_topic" default="/camera/image_raw"/>
   <arg name="show_gui" default="true"/>
   <arg name="model_path" default="$(find-pkg-share demo2v2)/model/yolo26s-pose.pt"/>
+  <arg name="mediapipe_world_scale" default="1.0"/>
+  <arg name="mediapipe_z_sign" default="-1.0"/>
 
   <arg name="left_can_interface" default="can0"/>
   <arg name="right_can_interface" default="can1"/>
@@ -30,6 +32,8 @@
     <param name="image_topic" value="$(var image_topic)"/>
     <param name="body_pose" value="/body_pose"/>
     <param name="show_gui" value="$(var show_gui)"/>
+    <param name="world_scale" value="$(var mediapipe_world_scale)"/>
+    <param name="z_sign" value="$(var mediapipe_z_sign)"/>
     <param name="arm_depth_mode" value="near"/>
   </node>
 

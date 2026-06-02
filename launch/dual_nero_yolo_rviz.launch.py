@@ -83,6 +83,8 @@ def generate_launch_description():
                 "use_camera_topic": False,
                 "body_pose": "/body_pose",
                 "show_gui": LaunchConfiguration("show_gui"),
+                "world_scale": 1.0,
+                "z_sign": -1.0,
                 "arm_depth_mode": "near",
             }],
         ),
