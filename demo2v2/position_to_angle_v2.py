@@ -97,8 +97,15 @@ class PositionToAngleV2(Node):
         self.declare_parameter("yolo_j4_gain", 1.0)
         self.declare_parameter("yolo_j1_forward_max_deg", 70.0)
         self.declare_parameter("yolo_j1_forward_full_ratio", 0.45)
+        self.declare_parameter("yolo_j3_down_min_deg", -90.0)
+        self.declare_parameter("yolo_j3_down_max_deg", 0.0)
+        self.declare_parameter("yolo_j3_up_min_deg", -155.0)
+        self.declare_parameter("yolo_j3_up_max_deg", -90.0)
+        self.declare_parameter("yolo_j4_work_min_deg", 0.0)
+        self.declare_parameter("yolo_j4_work_max_deg", 110.0)
         self.declare_parameter("yolo_j1_home_deg", 0.0)
         self.declare_parameter("yolo_j2_home_deg", 0.0)
+        self.declare_parameter("yolo_j3_home_deg", 0.0)
         self.declare_parameter("yolo_j4_home_deg", 0.0)
         self.declare_parameter("yolo_left_j1_sign", -1.0)
         self.declare_parameter("yolo_right_j1_sign", 1.0)
@@ -108,6 +115,7 @@ class PositionToAngleV2(Node):
         self.declare_parameter("yolo_right_j3_sign", -1.0)
         self.declare_parameter("lock_j1_enabled", False)
         self.declare_parameter("lock_j2_enabled", False)
+        self.declare_parameter("lock_j5_j6_j7_enabled", True)
         self.declare_parameter("lock_j1_deg", 0.0)
         self.declare_parameter("lock_j2_deg", 0.0)
         self.declare_parameter("j1_j2_only", False)
@@ -140,9 +148,22 @@ class PositionToAngleV2(Node):
         self.yolo_j1_forward_full_ratio = float(
             np.clip(float(self.get_parameter("yolo_j1_forward_full_ratio").value), 0.05, 0.95)
         )
+        self.yolo_j3_down_range = np.deg2rad(np.asarray([
+            float(self.get_parameter("yolo_j3_down_min_deg").value),
+            float(self.get_parameter("yolo_j3_down_max_deg").value),
+        ], dtype=float))
+        self.yolo_j3_up_range = np.deg2rad(np.asarray([
+            float(self.get_parameter("yolo_j3_up_min_deg").value),
+            float(self.get_parameter("yolo_j3_up_max_deg").value),
+        ], dtype=float))
+        self.yolo_j4_work_limit = np.deg2rad(np.asarray([
+            float(self.get_parameter("yolo_j4_work_min_deg").value),
+            float(self.get_parameter("yolo_j4_work_max_deg").value),
+        ], dtype=float))
         self.yolo_homes = {
             "j1": np.deg2rad(float(self.get_parameter("yolo_j1_home_deg").value)),
             "j2": np.deg2rad(float(self.get_parameter("yolo_j2_home_deg").value)),
+            "j3": np.deg2rad(float(self.get_parameter("yolo_j3_home_deg").value)),
             "j4": np.deg2rad(float(self.get_parameter("yolo_j4_home_deg").value)),
         }
         self.yolo_j1_signs = {
@@ -159,6 +180,7 @@ class PositionToAngleV2(Node):
         }
         self.lock_j1_enabled = bool(self.get_parameter("lock_j1_enabled").value)
         self.lock_j2_enabled = bool(self.get_parameter("lock_j2_enabled").value)
+        self.lock_j5_j6_j7_enabled = bool(self.get_parameter("lock_j5_j6_j7_enabled").value)
         self.lock_j1 = np.deg2rad(float(self.get_parameter("lock_j1_deg").value))
         self.lock_j2 = np.deg2rad(float(self.get_parameter("lock_j2_deg").value))
         self.j1_j2_only = bool(self.get_parameter("j1_j2_only").value)
@@ -201,6 +223,7 @@ class PositionToAngleV2(Node):
             for side in ("left", "right"):
                 self.latest[side][0] = self.yolo_homes["j1"]
                 self.latest[side][1] = self.yolo_homes["j2"]
+                self.latest[side][2] = self.yolo_homes["j3"]
                 self.latest[side][3] = self.yolo_homes["j4"]
 
         self.create_subscription(
@@ -232,7 +255,8 @@ class PositionToAngleV2(Node):
         self.get_logger().info(f"v2 solve_mode={self.solve_mode}")
         self.get_logger().info(
             f"v2 locks j1={self.lock_j1_enabled}:{fmt_degrees([self.lock_j1])[0]} "
-            f"j2={self.lock_j2_enabled}:{fmt_degrees([self.lock_j2])[0]}"
+            f"j2={self.lock_j2_enabled}:{fmt_degrees([self.lock_j2])[0]} "
+            f"j5_j6_j7={self.lock_j5_j6_j7_enabled}"
         )
         self.get_logger().info(f"v2 j1_j2_only={self.j1_j2_only}")
         self.get_logger().info(
@@ -261,6 +285,7 @@ class PositionToAngleV2(Node):
             self.get_logger().info(
                 f"v2 yolo homes deg j1={fmt_degrees([self.yolo_homes['j1']])[0]} "
                 f"j2={fmt_degrees([self.yolo_homes['j2']])[0]} "
+                f"j3={fmt_degrees([self.yolo_homes['j3']])[0]} "
                 f"j4={fmt_degrees([self.yolo_homes['j4']])[0]}"
             )
 
@@ -333,6 +358,12 @@ class PositionToAngleV2(Node):
         upper = self.joint_limits[joint_index, 1] - margin
         return float(np.clip(angle, lower, upper))
 
+    def apply_custom_working_limit(self, joint_index, angle, limits):
+        physical = self.joint_limits[joint_index]
+        lower = max(float(limits[0]), float(physical[0]))
+        upper = min(float(limits[1]), float(physical[1]))
+        return float(np.clip(angle, lower, upper))
+
     def apply_j1_soft_limit(self, side, angle):
         soft = self.j1_soft_limits[side]
         physical = self.joint_limits[0]
@@ -354,8 +385,14 @@ class PositionToAngleV2(Node):
         dt = 0.1 if last is None else max(now - last, 1e-3)
         current = self.latest[side]
         raw_target = np.asarray(target, dtype=float)
+        if self.lock_j1_enabled:
+            raw_target[0] = self.lock_j1
+        if self.lock_j2_enabled:
+            raw_target[1] = self.lock_j2
         if self.j1_j2_only:
             raw_target[2:] = 0.0
+        if self.lock_j5_j6_j7_enabled:
+            raw_target[4:] = 0.0
         target = self.apply_position_limits(raw_target)
         max_delta = self.joint_speed_limits * dt
         raw_delta = target - current
@@ -467,12 +504,28 @@ class PositionToAngleV2(Node):
         ratio = np.clip(current_len / max(baseline_len, 1e-6), 0.0, 1.0)
         return float(np.arccos(ratio))
 
-    def ratio_to_linear_forward(self, current_len, baseline_len):
+    def ratio_to_linear_forward(self, current_len, baseline_len, max_angle, full_ratio):
         ratio = np.clip(current_len / max(baseline_len, 1e-6), 0.0, 1.0)
         shrink = 1.0 - ratio
-        full_shrink = max(1.0 - self.yolo_j1_forward_full_ratio, 1e-6)
+        full_shrink = max(1.0 - full_ratio, 1e-6)
         progress = np.clip(shrink / full_shrink, 0.0, 1.0)
-        return float(progress * self.yolo_j1_forward_max)
+        return float(progress * max_angle)
+
+    def forearm_angle_to_j3(self, forearm_angle):
+        angle_from_up = abs(normalize_angle(forearm_angle))
+        half_turn = np.pi / 2.0
+        if angle_from_up <= half_turn:
+            progress = 1.0 - np.clip(angle_from_up / half_turn, 0.0, 1.0)
+            return float(
+                self.yolo_j3_up_range[1]
+                + progress * (self.yolo_j3_up_range[0] - self.yolo_j3_up_range[1])
+            )
+
+        progress = np.clip((angle_from_up - half_turn) / half_turn, 0.0, 1.0)
+        return float(
+            self.yolo_j3_down_range[0]
+            + progress * (self.yolo_j3_down_range[1] - self.yolo_j3_down_range[0])
+        )
 
     def solve_yolo_pixel_side(self, side, points):
         offset = 0 if side == "left" else 4
@@ -491,19 +544,29 @@ class PositionToAngleV2(Node):
         q[0] = self.yolo_homes["j1"] + (
             self.yolo_j1_signs[side]
             * self.yolo_gains["j1"]
-            * self.ratio_to_linear_forward(upper_len, baseline["upper_len"])
+            * self.ratio_to_linear_forward(
+                upper_len,
+                baseline["upper_len"],
+                self.yolo_j1_forward_max,
+                self.yolo_j1_forward_full_ratio,
+            )
         )
         q[1] = self.yolo_homes["j2"] + (
             self.yolo_j2_signs[side] * self.yolo_gains["j2"] * upper_delta
         )
         q[0] = self.apply_j1_soft_limit(side, q[0])
         q[1] = self.apply_working_limit(1, q[1], 0.0)
-        q[2] = self.yolo_j3_signs[side] * self.yolo_gains["j3"] * normalize_angle(
-            forearm_angle - baseline["forearm_angle"]
+        forearm_delta = normalize_angle(forearm_angle - baseline["forearm_angle"])
+        q[2] = self.yolo_homes["j3"] + (
+            self.yolo_j3_signs[side]
+            * self.yolo_gains["j3"]
+            * self.forearm_angle_to_j3(forearm_angle)
         )
-        q[3] = self.yolo_homes["j4"] + self.yolo_gains["j4"] * self.ratio_to_bend(
-            forearm_len, baseline["forearm_len"]
+        q[3] = self.yolo_homes["j4"] + (
+            self.yolo_gains["j4"] * abs(forearm_delta)
         )
+        q[2] = self.apply_working_limit(2, q[2], 0.0)
+        q[3] = self.apply_custom_working_limit(3, q[3], self.yolo_j4_work_limit)
         if self.lock_j1_enabled:
             q[0] = self.lock_j1
         if self.lock_j2_enabled:

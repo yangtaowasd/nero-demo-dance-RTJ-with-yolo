@@ -76,18 +76,33 @@ def generate_launch_description():
         DeclareLaunchArgument("yolo_still_threshold_px", default_value="180.0"),
         DeclareLaunchArgument("yolo_j1_home_deg", default_value="0.0"),
         DeclareLaunchArgument("yolo_j2_home_deg", default_value="0.0"),
+        DeclareLaunchArgument("yolo_j3_home_deg", default_value="0.0"),
+        DeclareLaunchArgument("yolo_j4_home_deg", default_value="0.0"),
         DeclareLaunchArgument("yolo_j1_forward_max_deg", default_value="70.0"),
         DeclareLaunchArgument("yolo_j1_forward_full_ratio", default_value="0.45"),
+        DeclareLaunchArgument("yolo_j3_down_min_deg", default_value="-90.0"),
+        DeclareLaunchArgument("yolo_j3_down_max_deg", default_value="0.0"),
+        DeclareLaunchArgument("yolo_j3_up_min_deg", default_value="-155.0"),
+        DeclareLaunchArgument("yolo_j3_up_max_deg", default_value="-90.0"),
+        DeclareLaunchArgument("yolo_j4_work_min_deg", default_value="0.0"),
+        DeclareLaunchArgument("yolo_j4_work_max_deg", default_value="110.0"),
         DeclareLaunchArgument("yolo_j2_gain", default_value="1.0"),
+        DeclareLaunchArgument("yolo_j3_gain", default_value="1.0"),
+        DeclareLaunchArgument("yolo_j4_gain", default_value="1.0"),
         DeclareLaunchArgument("yolo_left_j2_sign", default_value="1.0"),
         DeclareLaunchArgument("yolo_right_j2_sign", default_value="-1.0"),
+        DeclareLaunchArgument("yolo_left_j3_sign", default_value="1.0"),
+        DeclareLaunchArgument("yolo_right_j3_sign", default_value="-1.0"),
         DeclareLaunchArgument("stable_pose_required", default_value="true"),
         DeclareLaunchArgument("stable_pose_duration", default_value="1.0"),
         DeclareLaunchArgument("pose_read_duration", default_value="2.0"),
         DeclareLaunchArgument("stable_motion_threshold_px", default_value="180.0"),
         DeclareLaunchArgument("stable_range_threshold_px", default_value="180.0"),
         DeclareLaunchArgument("show_initial_pose_guide", default_value="true"),
-        DeclareLaunchArgument("j1_j2_only", default_value="true"),
+        DeclareLaunchArgument("lock_j1_enabled", default_value="false"),
+        DeclareLaunchArgument("lock_j2_enabled", default_value="false"),
+        DeclareLaunchArgument("lock_j5_j6_j7_enabled", default_value="true"),
+        DeclareLaunchArgument("j1_j2_only", default_value="false"),
         *state_publisher("left", 0.35, -1.5707963, -1.5707963),
         *state_publisher("right", -0.35, -1.5707963, 1.5707963),
         Node(
@@ -221,15 +236,15 @@ def generate_launch_description():
                     value_type=str,
                 ),
                 "lock_j1_enabled": ParameterValue(
-                    PythonExpression([
-                        "'", LaunchConfiguration("pose_backend"), "' != 'yolo26s'"
-                    ]),
+                    LaunchConfiguration("lock_j1_enabled"),
                     value_type=bool,
                 ),
                 "lock_j2_enabled": ParameterValue(
-                    PythonExpression([
-                        "'", LaunchConfiguration("pose_backend"), "' != 'yolo26s'"
-                    ]),
+                    LaunchConfiguration("lock_j2_enabled"),
+                    value_type=bool,
+                ),
+                "lock_j5_j6_j7_enabled": ParameterValue(
+                    LaunchConfiguration("lock_j5_j6_j7_enabled"),
                     value_type=bool,
                 ),
                 "lock_j1_deg": 0.0,
@@ -256,6 +271,14 @@ def generate_launch_description():
                     LaunchConfiguration("yolo_j2_home_deg"),
                     value_type=float,
                 ),
+                "yolo_j3_home_deg": ParameterValue(
+                    LaunchConfiguration("yolo_j3_home_deg"),
+                    value_type=float,
+                ),
+                "yolo_j4_home_deg": ParameterValue(
+                    LaunchConfiguration("yolo_j4_home_deg"),
+                    value_type=float,
+                ),
                 "yolo_j1_forward_max_deg": ParameterValue(
                     LaunchConfiguration("yolo_j1_forward_max_deg"),
                     value_type=float,
@@ -264,8 +287,40 @@ def generate_launch_description():
                     LaunchConfiguration("yolo_j1_forward_full_ratio"),
                     value_type=float,
                 ),
+                "yolo_j3_down_min_deg": ParameterValue(
+                    LaunchConfiguration("yolo_j3_down_min_deg"),
+                    value_type=float,
+                ),
+                "yolo_j3_down_max_deg": ParameterValue(
+                    LaunchConfiguration("yolo_j3_down_max_deg"),
+                    value_type=float,
+                ),
+                "yolo_j3_up_min_deg": ParameterValue(
+                    LaunchConfiguration("yolo_j3_up_min_deg"),
+                    value_type=float,
+                ),
+                "yolo_j3_up_max_deg": ParameterValue(
+                    LaunchConfiguration("yolo_j3_up_max_deg"),
+                    value_type=float,
+                ),
+                "yolo_j4_work_min_deg": ParameterValue(
+                    LaunchConfiguration("yolo_j4_work_min_deg"),
+                    value_type=float,
+                ),
+                "yolo_j4_work_max_deg": ParameterValue(
+                    LaunchConfiguration("yolo_j4_work_max_deg"),
+                    value_type=float,
+                ),
                 "yolo_j2_gain": ParameterValue(
                     LaunchConfiguration("yolo_j2_gain"),
+                    value_type=float,
+                ),
+                "yolo_j3_gain": ParameterValue(
+                    LaunchConfiguration("yolo_j3_gain"),
+                    value_type=float,
+                ),
+                "yolo_j4_gain": ParameterValue(
+                    LaunchConfiguration("yolo_j4_gain"),
                     value_type=float,
                 ),
                 "yolo_left_j2_sign": ParameterValue(
@@ -274,6 +329,14 @@ def generate_launch_description():
                 ),
                 "yolo_right_j2_sign": ParameterValue(
                     LaunchConfiguration("yolo_right_j2_sign"),
+                    value_type=float,
+                ),
+                "yolo_left_j3_sign": ParameterValue(
+                    LaunchConfiguration("yolo_left_j3_sign"),
+                    value_type=float,
+                ),
+                "yolo_right_j3_sign": ParameterValue(
+                    LaunchConfiguration("yolo_right_j3_sign"),
                     value_type=float,
                 ),
             }],
