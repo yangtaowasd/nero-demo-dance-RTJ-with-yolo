@@ -60,13 +60,13 @@ def fmt_degrees(values):
 
 
 JOINT_LIMITS_DEG = np.asarray([
-    [-157.0, 157.0],
-    [-15.0, 190.0],
-    [-160.0, 160.0],
-    [-60.0, 125.0],
-    [-160.0, 160.0],
-    [-43.0, 58.0],
-    [-90.0, 90.0],
+    [-150.0, 150.0],
+    [-70.0, 100.0],
+    [-150.0, 150.0],
+    [-50.0, 110.0],
+    [-150.0, 150.0],
+    [-35.0, 50.0],
+    [-80.0, 80.0],
 ], dtype=float)
 
 JOINT_SPEED_LIMITS_DEG = np.asarray([
@@ -95,8 +95,10 @@ class PositionToAngleV2(Node):
         self.declare_parameter("yolo_j2_gain", 1.0)
         self.declare_parameter("yolo_j3_gain", 1.0)
         self.declare_parameter("yolo_j4_gain", 1.0)
+        self.declare_parameter("yolo_j1_forward_max_deg", 70.0)
+        self.declare_parameter("yolo_j1_forward_full_ratio", 0.45)
         self.declare_parameter("yolo_j1_home_deg", 0.0)
-        self.declare_parameter("yolo_j2_home_deg", 90.0)
+        self.declare_parameter("yolo_j2_home_deg", 0.0)
         self.declare_parameter("yolo_j4_home_deg", 0.0)
         self.declare_parameter("yolo_left_j1_sign", -1.0)
         self.declare_parameter("yolo_right_j1_sign", 1.0)
@@ -132,6 +134,12 @@ class PositionToAngleV2(Node):
             "j3": float(self.get_parameter("yolo_j3_gain").value),
             "j4": float(self.get_parameter("yolo_j4_gain").value),
         }
+        self.yolo_j1_forward_max = np.deg2rad(
+            float(self.get_parameter("yolo_j1_forward_max_deg").value)
+        )
+        self.yolo_j1_forward_full_ratio = float(
+            np.clip(float(self.get_parameter("yolo_j1_forward_full_ratio").value), 0.05, 0.95)
+        )
         self.yolo_homes = {
             "j1": np.deg2rad(float(self.get_parameter("yolo_j1_home_deg").value)),
             "j2": np.deg2rad(float(self.get_parameter("yolo_j2_home_deg").value)),
@@ -459,6 +467,13 @@ class PositionToAngleV2(Node):
         ratio = np.clip(current_len / max(baseline_len, 1e-6), 0.0, 1.0)
         return float(np.arccos(ratio))
 
+    def ratio_to_linear_forward(self, current_len, baseline_len):
+        ratio = np.clip(current_len / max(baseline_len, 1e-6), 0.0, 1.0)
+        shrink = 1.0 - ratio
+        full_shrink = max(1.0 - self.yolo_j1_forward_full_ratio, 1e-6)
+        progress = np.clip(shrink / full_shrink, 0.0, 1.0)
+        return float(progress * self.yolo_j1_forward_max)
+
     def solve_yolo_pixel_side(self, side, points):
         offset = 0 if side == "left" else 4
         shoulder = points[offset + 0, :2]
@@ -476,7 +491,7 @@ class PositionToAngleV2(Node):
         q[0] = self.yolo_homes["j1"] + (
             self.yolo_j1_signs[side]
             * self.yolo_gains["j1"]
-            * self.ratio_to_bend(upper_len, baseline["upper_len"])
+            * self.ratio_to_linear_forward(upper_len, baseline["upper_len"])
         )
         q[1] = self.yolo_homes["j2"] + (
             self.yolo_j2_signs[side] * self.yolo_gains["j2"] * upper_delta

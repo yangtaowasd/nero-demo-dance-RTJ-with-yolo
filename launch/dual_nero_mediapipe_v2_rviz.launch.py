@@ -75,7 +75,9 @@ def generate_launch_description():
         DeclareLaunchArgument("yolo_calibration_duration", default_value="2.0"),
         DeclareLaunchArgument("yolo_still_threshold_px", default_value="180.0"),
         DeclareLaunchArgument("yolo_j1_home_deg", default_value="0.0"),
-        DeclareLaunchArgument("yolo_j2_home_deg", default_value="90.0"),
+        DeclareLaunchArgument("yolo_j2_home_deg", default_value="0.0"),
+        DeclareLaunchArgument("yolo_j1_forward_max_deg", default_value="70.0"),
+        DeclareLaunchArgument("yolo_j1_forward_full_ratio", default_value="0.45"),
         DeclareLaunchArgument("yolo_j2_gain", default_value="1.0"),
         DeclareLaunchArgument("yolo_left_j2_sign", default_value="1.0"),
         DeclareLaunchArgument("yolo_right_j2_sign", default_value="-1.0"),
@@ -252,6 +254,14 @@ def generate_launch_description():
                 ),
                 "yolo_j2_home_deg": ParameterValue(
                     LaunchConfiguration("yolo_j2_home_deg"),
+                    value_type=float,
+                ),
+                "yolo_j1_forward_max_deg": ParameterValue(
+                    LaunchConfiguration("yolo_j1_forward_max_deg"),
+                    value_type=float,
+                ),
+                "yolo_j1_forward_full_ratio": ParameterValue(
+                    LaunchConfiguration("yolo_j1_forward_full_ratio"),
                     value_type=float,
                 ),
                 "yolo_j2_gain": ParameterValue(
