@@ -3,7 +3,7 @@
 <package format="3">
   <name>demo2v2</name>
   <version>0.0.0</version>
-  <description>MediaPipe body pose to mirrored dual Nero arm control using AGX SDK topics.</description>
+  <description>MediaPipe arm pose to mirrored dual Nero arm control using AGX SDK topics.</description>
   <maintainer email="yang@todo.todo">yang</maintainer>
   <license>Apache-2.0</license>
 

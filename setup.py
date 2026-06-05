@@ -30,7 +30,7 @@ setup(
     zip_safe=True,
     maintainer='yang',
     maintainer_email='yang@todo.todo',
-    description='MediaPipe body pose to mirrored dual Nero arm control using AGX SDK topics.',
+    description='MediaPipe arm pose to mirrored dual Nero arm control using AGX SDK topics.',
     license='Apache-2.0',
     extras_require={
         'test': [
@@ -39,8 +39,11 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'arm_mediapipe = demo2v2.body_mediapipe:main',
+            'arm_mediapipe = demo2v2.arm_mediapipe:main',
+            'arm_mediapipe_v2 = demo2v2.arm_mediapipe_v2:main',
+            'arm_yolo26s_v2 = demo2v2.arm_yolo26s_v2:main',
             'position_to_angle = demo2v2.position_to_angle:main',
+            'position_to_angle_v2 = demo2v2.position_to_angle_v2:main',
             'arm_driver = demo2v2.arm_driver:main',
         ],
     },

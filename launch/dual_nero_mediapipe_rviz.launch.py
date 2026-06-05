@@ -62,8 +62,16 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("camera_id", default_value="0"),
         DeclareLaunchArgument("show_gui", default_value="true"),
+        DeclareLaunchArgument("mediapipe_world_scale", default_value="1.0"),
+        DeclareLaunchArgument("mediapipe_z_sign", default_value="-1.0"),
+        DeclareLaunchArgument("normalize_limb_lengths", default_value="true"),
+        DeclareLaunchArgument("upper_arm_length", default_value="0.30"),
+        DeclareLaunchArgument("forearm_length", default_value="0.26"),
+        DeclareLaunchArgument("center_roi_enabled", default_value="true"),
+        DeclareLaunchArgument("center_roi_fraction", default_value="0.67"),
         DeclareLaunchArgument("motion_scale", default_value="1.0"),
         DeclareLaunchArgument("max_joint_step", default_value="0.08"),
+        DeclareLaunchArgument("debug_nero_points", default_value="true"),
         *state_publisher("left", 0.35, -1.5707963, -1.5707963),
         *state_publisher("right", -0.35, -1.5707963, 1.5707963),
         Node(
@@ -76,8 +84,35 @@ def generate_launch_description():
                 "use_camera_topic": False,
                 "arm_pose": "/arm_pose",
                 "show_gui": LaunchConfiguration("show_gui"),
-                "world_scale": 1.0,
-                "z_sign": -1.0,
+                "model_complexity": 1,
+                "world_scale": ParameterValue(
+                    LaunchConfiguration("mediapipe_world_scale"),
+                    value_type=float,
+                ),
+                "z_sign": ParameterValue(
+                    LaunchConfiguration("mediapipe_z_sign"),
+                    value_type=float,
+                ),
+                "normalize_limb_lengths": ParameterValue(
+                    LaunchConfiguration("normalize_limb_lengths"),
+                    value_type=bool,
+                ),
+                "upper_arm_length": ParameterValue(
+                    LaunchConfiguration("upper_arm_length"),
+                    value_type=float,
+                ),
+                "forearm_length": ParameterValue(
+                    LaunchConfiguration("forearm_length"),
+                    value_type=float,
+                ),
+                "center_roi_enabled": ParameterValue(
+                    LaunchConfiguration("center_roi_enabled"),
+                    value_type=bool,
+                ),
+                "center_roi_fraction": ParameterValue(
+                    LaunchConfiguration("center_roi_fraction"),
+                    value_type=float,
+                ),
             }],
         ),
         Node(
@@ -90,6 +125,10 @@ def generate_launch_description():
                 "input_topic": "/arm_pose",
                 "motion_scale": LaunchConfiguration("motion_scale"),
                 "max_joint_step": LaunchConfiguration("max_joint_step"),
+                "debug_nero_points": ParameterValue(
+                    LaunchConfiguration("debug_nero_points"),
+                    value_type=bool,
+                ),
                 "left_joint_state_topic": "/left/joint_states",
                 "right_joint_state_topic": "/right/joint_states",
                 "left_camera_to_robot_matrix": [
@@ -98,7 +137,7 @@ def generate_launch_description():
                     0.0, -1.0, 0.0,
                 ],
                 "right_camera_to_robot_matrix": [
-                    0.0, 0.0, -1.0,
+                    0.0, 0.0, 1.0,
                     1.0, 0.0, 0.0,
                     0.0, -1.0, 0.0,
                 ],

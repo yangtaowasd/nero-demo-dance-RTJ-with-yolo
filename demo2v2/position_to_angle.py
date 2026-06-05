@@ -30,7 +30,7 @@ def read_matrix(node, name):
 def default_camera_to_robot_matrix(side):
     if side == "right":
         return [
-            0.0, 0.0, -1.0,
+            0.0, 0.0, 1.0,
             1.0, 0.0, 0.0,
             0.0, -1.0, 0.0,
         ]
@@ -47,6 +47,17 @@ def read_quat(node, name):
         node.get_logger().warning(f"{name} must have 4 values, using identity quaternion")
         return [0.0, 0.0, 0.0, 1.0]
     return [float(v) for v in values]
+
+
+def format_point(name, point):
+    return f"{name}=({point[0]: .3f}, {point[1]: .3f}, {point[2]: .3f})"
+
+
+def make_points_msg(points):
+    data = []
+    for point in points:
+        data.extend([float(point[0]), float(point[1]), float(point[2])])
+    return Float32MultiArray(data=data)
 
 
 class KalmanPoint3D:
@@ -238,6 +249,12 @@ class ArmPointFilterV2(Node):
                 throttle_duration_sec=1.0,
             )
             return
+        if not all(np.isfinite(value) for value in data[1:]):
+            self.get_logger().warning(
+                "arm pose contains nan/inf, dropping this frame",
+                throttle_duration_sec=1.0,
+            )
+            return
 
         points = {}
         for name, keypoint_id in self.target_points.items():
@@ -274,6 +291,9 @@ class AgxArmFollowerV2(Node):
         self.declare_parameter("arm_points_are_relative", True)
         self.declare_parameter("use_current_orientation", True)
         self.declare_parameter("fixed_target_orientation", [0.0, 0.0, 0.0, 1.0])
+        self.declare_parameter("debug_nero_points", True)
+        self.declare_parameter("left_nero_points_topic", "/left_nero_points")
+        self.declare_parameter("right_nero_points_topic", "/right_nero_points")
         self.declare_parameter("left_camera_to_robot_matrix", default_camera_to_robot_matrix("left"))
         self.declare_parameter("right_camera_to_robot_matrix", default_camera_to_robot_matrix("right"))
         self.declare_parameter("camera_to_robot_matrix", default_camera_to_robot_matrix("left"))
@@ -290,6 +310,7 @@ class AgxArmFollowerV2(Node):
         self.min_command_interval = float(self.get_parameter("min_command_interval").value)
         self.arm_points_are_relative = read_bool(self, "arm_points_are_relative")
         self.use_current_orientation = read_bool(self, "use_current_orientation")
+        self.debug_nero_points = read_bool(self, "debug_nero_points")
         self.fixed_target_orientation = read_quat(self, "fixed_target_orientation")
         self.left_camera_to_robot_matrix = read_matrix(self, "left_camera_to_robot_matrix")
         self.right_camera_to_robot_matrix = read_matrix(self, "right_camera_to_robot_matrix")
@@ -332,6 +353,12 @@ class AgxArmFollowerV2(Node):
 
         self.left_move_p_pub = self.create_publisher(PoseStamped, self.left_move_p_topic, 10)
         self.right_move_p_pub = self.create_publisher(PoseStamped, self.right_move_p_topic, 10)
+        self.left_nero_points_pub = self.create_publisher(
+            Float32MultiArray, self.get_parameter("left_nero_points_topic").value, 10
+        )
+        self.right_nero_points_pub = self.create_publisher(
+            Float32MultiArray, self.get_parameter("right_nero_points_topic").value, 10
+        )
 
         self.get_logger().warning(
             f"position_to_angle_v2 uses AGX move_p only: {self.left_move_p_topic}, {self.right_move_p_topic}. "
@@ -382,6 +409,28 @@ class AgxArmFollowerV2(Node):
         robot_delta = self.motion_scale * (self.camera_matrix_for_side(side) @ wrist_rel)
         return home_tcp + self.limit_delta(robot_delta)
 
+    def transform_points_to_nero(self, side, shoulder, elbow, wrist):
+        if self.arm_points_are_relative:
+            camera_points = (np.zeros(3), elbow, wrist)
+        else:
+            camera_points = (np.zeros(3), elbow - shoulder, wrist - shoulder)
+        matrix = self.camera_matrix_for_side(side)
+        return [self.motion_scale * (matrix @ point) for point in camera_points]
+
+    def publish_nero_points(self, side, points):
+        if side == "left":
+            self.left_nero_points_pub.publish(make_points_msg(points))
+        else:
+            self.right_nero_points_pub.publish(make_points_msg(points))
+        if self.debug_nero_points:
+            self.get_logger().info(
+                f"{side} Nero points rel(m): "
+                f"{format_point('shoulder', points[0])}, "
+                f"{format_point('elbow', points[1])}, "
+                f"{format_point('wrist', points[2])}",
+                throttle_duration_sec=0.5,
+            )
+
     def make_pose_stamped(self, side, target_xyz):
         msg = PoseStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -420,6 +469,8 @@ class AgxArmFollowerV2(Node):
         shoulder = np.asarray(msg.data[0:3], dtype=float)
         elbow = np.asarray(msg.data[3:6], dtype=float)
         wrist = np.asarray(msg.data[6:9], dtype=float)
+        nero_points = self.transform_points_to_nero(side, shoulder, elbow, wrist)
+        self.publish_nero_points(side, nero_points)
         target_xyz = self.build_target_xyz(side, shoulder, elbow, wrist, home_tcp)
         pose_msg = self.make_pose_stamped(side, target_xyz)
 
@@ -438,6 +489,9 @@ class RvizJointStateFollower(Node):
         self.declare_parameter("max_joint_step", 0.08)
         self.declare_parameter("min_command_interval", 0.05)
         self.declare_parameter("arm_points_are_relative", True)
+        self.declare_parameter("debug_nero_points", True)
+        self.declare_parameter("left_nero_points_topic", "/left_nero_points")
+        self.declare_parameter("right_nero_points_topic", "/right_nero_points")
         self.declare_parameter("left_camera_to_robot_matrix", default_camera_to_robot_matrix("left"))
         self.declare_parameter("right_camera_to_robot_matrix", default_camera_to_robot_matrix("right"))
 
@@ -445,16 +499,28 @@ class RvizJointStateFollower(Node):
         self.max_joint_step = float(self.get_parameter("max_joint_step").value)
         self.min_command_interval = float(self.get_parameter("min_command_interval").value)
         self.arm_points_are_relative = read_bool(self, "arm_points_are_relative")
+        self.debug_nero_points = read_bool(self, "debug_nero_points")
         self.left_camera_to_robot_matrix = read_matrix(self, "left_camera_to_robot_matrix")
         self.right_camera_to_robot_matrix = read_matrix(self, "right_camera_to_robot_matrix")
 
         self.joint_names = [f"joint{i}" for i in range(1, 8)]
         self.home = np.asarray([0.0, 1.5707963, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=float)
+        self.left_j1_min = np.deg2rad(0.0)
+        self.left_j1_home = np.deg2rad(90.0)
+        self.left_j1_max = np.deg2rad(155.0)
+        self.left_j1_gain = 0.5
+        self.right_j1_min = np.deg2rad(0.0)
+        self.right_j1_home = np.deg2rad(90.0)
+        self.right_j1_max = np.deg2rad(155.0)
+        self.right_j1_gain = 0.5
+        self.nero_j1_min = np.deg2rad(0.0)
+        self.nero_j1_home = np.deg2rad(90.0)
+        self.nero_j1_max = np.deg2rad(155.0)
         self.latest = {"left": self.home.copy(), "right": self.home.copy()}
         self.last_command_time = {"left": 0.0, "right": 0.0}
         self.limits = np.asarray([
             [-2.70526, 2.70526],
-            [-1.74, 1.74],
+            [self.nero_j1_min, self.nero_j1_max],
             [-2.75, 2.75],
             [-1.01, 2.14],
             [-2.75, 2.75],
@@ -479,6 +545,12 @@ class RvizJointStateFollower(Node):
         )
         self.right_pub = self.create_publisher(
             JointState, self.get_parameter("right_joint_state_topic").value, 10
+        )
+        self.left_nero_points_pub = self.create_publisher(
+            Float32MultiArray, self.get_parameter("left_nero_points_topic").value, 10
+        )
+        self.right_nero_points_pub = self.create_publisher(
+            Float32MultiArray, self.get_parameter("right_nero_points_topic").value, 10
         )
 
         self.timer = self.create_timer(0.1, self.publish_home_until_pose_ready)
@@ -512,6 +584,28 @@ class RvizJointStateFollower(Node):
             forearm = wrist - elbow
         return upper, forearm
 
+    def transform_points_to_nero(self, side, shoulder, elbow, wrist):
+        if self.arm_points_are_relative:
+            camera_points = (np.zeros(3), elbow, wrist)
+        else:
+            camera_points = (np.zeros(3), elbow - shoulder, wrist - shoulder)
+        matrix = self.camera_matrix_for_side(side)
+        return [self.motion_scale * (matrix @ point) for point in camera_points]
+
+    def publish_nero_points(self, side, points):
+        if side == "left":
+            self.left_nero_points_pub.publish(make_points_msg(points))
+        else:
+            self.right_nero_points_pub.publish(make_points_msg(points))
+        if self.debug_nero_points:
+            self.get_logger().info(
+                f"{side} Nero points rel(m): "
+                f"{format_point('shoulder', points[0])}, "
+                f"{format_point('elbow', points[1])}, "
+                f"{format_point('wrist', points[2])}",
+                throttle_duration_sec=0.5,
+            )
+
     def vector_angle(self, a, b):
         a_norm = np.linalg.norm(a)
         b_norm = np.linalg.norm(b)
@@ -520,22 +614,74 @@ class RvizJointStateFollower(Node):
         cos_value = float(np.dot(a, b) / (a_norm * b_norm))
         return float(np.arccos(np.clip(cos_value, -1.0, 1.0)))
 
+    def normalize_angle(self, angle):
+        return float((angle + np.pi) % (2.0 * np.pi) - np.pi)
+
+    def vertical_plane_angle(self, vector, yaw):
+        radial_axis = np.asarray([np.cos(yaw), np.sin(yaw), 0.0], dtype=float)
+        radial = float(np.dot(vector, radial_axis))
+        return float(np.arctan2(vector[2], radial))
+
+    def project_to_yaw_plane(self, vector, yaw, clamp_forward=False):
+        radial_axis = np.asarray([np.cos(yaw), np.sin(yaw), 0.0], dtype=float)
+        radial = float(np.dot(vector, radial_axis))
+        if clamp_forward:
+            radial = max(radial, 0.0)
+        return radial * radial_axis + np.asarray([0.0, 0.0, vector[2]], dtype=float)
+
+    def solve_nero_j1(self, upper):
+        horizontal = max(np.hypot(upper[0], upper[1]), 1e-6)
+        pitch = float(np.arctan2(upper[2], horizontal))
+        return float(np.clip(self.nero_j1_home + pitch, self.nero_j1_min, self.nero_j1_max))
+
+    def solve_base_j1(self, side, raw_yaw):
+        if side == "right":
+            return float(
+                np.clip(
+                    self.right_j1_home + self.right_j1_gain * (raw_yaw - self.right_j1_home),
+                    self.right_j1_min,
+                    self.right_j1_max,
+                )
+            )
+        return float(
+            np.clip(
+                self.left_j1_home + self.left_j1_gain * (raw_yaw - self.left_j1_home),
+                self.left_j1_min,
+                self.left_j1_max,
+            )
+        )
+
+    def left_j1_is_reachable(self, raw_yaw):
+        return self.left_j1_min <= raw_yaw <= self.left_j1_max
+
+    def solve_elbow_bend(self, upper, forearm, yaw):
+        upper_pitch = self.vertical_plane_angle(upper, yaw)
+        forearm_pitch = self.vertical_plane_angle(forearm, yaw)
+        return self.normalize_angle(forearm_pitch - upper_pitch)
+
     def solve_visual_joints(self, side, shoulder, elbow, wrist):
         upper_cam, forearm_cam = self.get_relative_vectors(shoulder, elbow, wrist)
         matrix = self.camera_matrix_for_side(side)
         upper = self.motion_scale * (matrix @ upper_cam)
         forearm = self.motion_scale * (matrix @ forearm_cam)
-        wrist_vec = upper + forearm
 
-        horizontal = max(np.hypot(upper[0], upper[1]), 1e-6)
         q = self.home.copy()
 
-        q[0] = np.arctan2(upper[1], upper[0])
-        q[1] = 1.5707963 + np.arctan2(upper[2], horizontal)
+        shoulder_yaw = float(np.arctan2(upper[1], upper[0]))
+        q[0] = self.solve_base_j1(side, shoulder_yaw)
+
+        solver_yaw = shoulder_yaw
+        if side == "left" and not self.left_j1_is_reachable(shoulder_yaw):
+            solver_yaw = q[0]
+            upper = self.project_to_yaw_plane(upper, solver_yaw, clamp_forward=True)
+            forearm = self.project_to_yaw_plane(forearm, solver_yaw)
+        wrist_vec = upper + forearm
+
+        q[1] = self.solve_nero_j1(upper)
         q[2] = 0.35 * np.arctan2(forearm[1], max(abs(forearm[0]), 1e-6))
 
-        elbow_bend = self.vector_angle(upper, forearm)
-        q[3] = np.clip(1.5707963 - elbow_bend, self.limits[3, 0], self.limits[3, 1])
+        elbow_bend = self.solve_elbow_bend(upper, forearm, solver_yaw)
+        q[3] = np.clip(elbow_bend, self.limits[3, 0], self.limits[3, 1])
 
         wrist_horizontal = max(np.hypot(wrist_vec[0], wrist_vec[1]), 1e-6)
         q[4] = 0.35 * np.arctan2(wrist_vec[1], wrist_vec[0])
@@ -543,7 +689,6 @@ class RvizJointStateFollower(Node):
         q[6] = 0.0
 
         if side == "right":
-            q[0] = -q[0]
             q[2] = -q[2]
             q[4] = -q[4]
 
@@ -584,6 +729,8 @@ class RvizJointStateFollower(Node):
         ):
             return
 
+        nero_points = self.transform_points_to_nero(side, shoulder, elbow, wrist)
+        self.publish_nero_points(side, nero_points)
         target = self.solve_visual_joints(side, shoulder, elbow, wrist)
         joints = self.limit_step(side, target)
         self.latest[side] = joints

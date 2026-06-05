@@ -65,6 +65,7 @@ def generate_launch_description():
         Node(
             package="joint_state_publisher_gui",
             executable="joint_state_publisher_gui",
+            name="left_joint_state_publisher_gui",
             parameters=[
                 robot_description(),
                 {"zeros": {"joint2": 1.5707963}},
@@ -72,6 +73,20 @@ def generate_launch_description():
             remappings=[
                 ("joint_states", "/left/joint_states"),
                 ("robot_description", "/left/robot_description"),
+            ],
+            output="screen",
+        ),
+        Node(
+            package="joint_state_publisher_gui",
+            executable="joint_state_publisher_gui",
+            name="right_joint_state_publisher_gui",
+            parameters=[
+                robot_description(),
+                {"zeros": {"joint2": 1.5707963}},
+            ],
+            remappings=[
+                ("joint_states", "/right/joint_states"),
+                ("robot_description", "/right/robot_description"),
             ],
             output="screen",
         ),

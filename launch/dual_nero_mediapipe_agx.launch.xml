@@ -9,6 +9,11 @@
   <arg name="show_gui" default="true"/>
   <arg name="mediapipe_world_scale" default="1.0"/>
   <arg name="mediapipe_z_sign" default="-1.0"/>
+  <arg name="normalize_limb_lengths" default="true"/>
+  <arg name="upper_arm_length" default="0.30"/>
+  <arg name="forearm_length" default="0.26"/>
+  <arg name="center_roi_enabled" default="true"/>
+  <arg name="center_roi_fraction" default="0.67"/>
 
   <arg name="left_can_interface" default="can0"/>
   <arg name="right_can_interface" default="can1"/>
@@ -21,8 +26,9 @@
   <arg name="max_target_delta" default="0.08"/>
   <arg name="min_command_interval" default="0.1"/>
   <arg name="max_missing_frames" default="8"/>
+  <arg name="debug_nero_points" default="true"/>
   <arg name="left_camera_to_robot_matrix" default="[0.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0]"/>
-  <arg name="right_camera_to_robot_matrix" default="[0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, -1.0, 0.0]"/>
+  <arg name="right_camera_to_robot_matrix" default="[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, -1.0, 0.0]"/>
 
   <node pkg="demo2v2" exec="arm_mediapipe" name="arm_mediapipe_node" output="screen" if="$(var start_arm_pose)">
     <param name="camera_id" value="$(var camera_id)"/>
@@ -30,8 +36,14 @@
     <param name="image_topic" value="$(var image_topic)"/>
     <param name="arm_pose" value="/arm_pose"/>
     <param name="show_gui" value="$(var show_gui)"/>
+    <param name="model_complexity" value="1"/>
     <param name="world_scale" value="$(var mediapipe_world_scale)"/>
     <param name="z_sign" value="$(var mediapipe_z_sign)"/>
+    <param name="normalize_limb_lengths" value="$(var normalize_limb_lengths)"/>
+    <param name="upper_arm_length" value="$(var upper_arm_length)"/>
+    <param name="forearm_length" value="$(var forearm_length)"/>
+    <param name="center_roi_enabled" value="$(var center_roi_enabled)"/>
+    <param name="center_roi_fraction" value="$(var center_roi_fraction)"/>
   </node>
 
   <include file="$(find-pkg-share agx_arm_ctrl)/launch/start_single_agx_arm.launch.py" if="$(var start_agx_ctrl)">
@@ -60,6 +72,7 @@
     <param name="max_target_delta" value="$(var max_target_delta)"/>
     <param name="min_command_interval" value="$(var min_command_interval)"/>
     <param name="max_missing_frames" value="$(var max_missing_frames)"/>
+    <param name="debug_nero_points" value="$(var debug_nero_points)"/>
     <param name="left_camera_to_robot_matrix" value="$(var left_camera_to_robot_matrix)"/>
     <param name="right_camera_to_robot_matrix" value="$(var right_camera_to_robot_matrix)"/>
     <param name="left_tcp_feedback_topic" value="/left/feedback/tcp_pose"/>
