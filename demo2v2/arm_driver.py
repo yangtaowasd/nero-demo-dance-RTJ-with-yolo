@@ -4,7 +4,16 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 from pyAgxArm.api.constants import ROBOT_JOINT_LIMIT_PRESET_RAD
-from demo2v2.arm_and_revo2 import *
+from demo2v2.arm_and_revo2 import Nero
+
+
+PARAM_DEFAULTS = {
+    "angle_topic": "/angle_topic",
+    "joint_status_topic": "/joint_status_topic",
+    "can_interface": "can0",
+    "max_command_delta": 0.25,
+    "execute_motion": False,
+}
 
 
 def unwrap_msg(ret):
@@ -17,11 +26,8 @@ class ArmDriverNode(Node):
     def __init__(self):
         super().__init__("arm_driver_node")
 
-        self.declare_parameter("angle_topic", "/angle_topic")
-        self.declare_parameter("joint_status_topic", "/joint_status_topic")
-        self.declare_parameter("can_interface", "can0")
-        self.declare_parameter("max_command_delta", 0.25)
-        self.declare_parameter("execute_motion", False)
+        for name, default in PARAM_DEFAULTS.items():
+            self.declare_parameter(name, default)
 
         self.sub_topic = self.get_parameter("angle_topic").value
         self.joint_status_topic = self.get_parameter("joint_status_topic").value

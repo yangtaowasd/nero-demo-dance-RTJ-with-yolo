@@ -3,14 +3,13 @@
 <package format="3">
   <name>demo2v2</name>
   <version>0.0.0</version>
-  <description>MediaPipe arm pose to mirrored dual Nero arm control using AGX SDK topics.</description>
+  <description>YOLO pose to mirrored dual Nero arm control.</description>
   <maintainer email="yang@todo.todo">yang</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
-  <depend>geometry_msgs</depend>
   <depend>xacro</depend>
   <exec_depend>agx_arm_description</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
