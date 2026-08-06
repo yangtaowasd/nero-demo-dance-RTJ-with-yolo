@@ -56,6 +56,29 @@ def test_reconstructor_rejects_misaligned_depth_dimensions():
         )
 
 
+def test_partial_reconstruction_keeps_coordinates_around_a_depth_hole():
+    intrinsics = PinholeIntrinsics(20, 20, 10.0, 10.0, 10.0, 10.0)
+    reconstructor = DepthLandmarkReconstructor(
+        radius=0, min_valid_pixels=1
+    )
+    pixels = np.asarray([[column, 5.0] for column in range(2, 10)])
+    depth = np.full((20, 20), 2.0, dtype=float)
+    depth[5, 2] = 0.0
+
+    points, depths = reconstructor.reconstruct_partial(
+        pixels, depth, intrinsics
+    )
+
+    assert np.all(np.isnan(points[0]))
+    assert np.isnan(depths[0])
+    np.testing.assert_allclose(points[1:, 2], 2.0)
+    complete, complete_depths = reconstructor.reconstruct(
+        pixels, depth, intrinsics
+    )
+    assert complete is None
+    assert complete_depths is None
+
+
 def test_padded_rgb_message_is_decoded_to_bgr():
     message = SimpleNamespace(
         encoding="rgb8",

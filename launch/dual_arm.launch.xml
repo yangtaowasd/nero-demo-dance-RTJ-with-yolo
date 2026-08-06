@@ -21,7 +21,7 @@
   <arg name="agx_pub_rate" default="200"/>
 
   <!-- ==================== 视觉参数 ==================== -->
-  <arg name="model_path" default="$(find-pkg-share nero_assets)/model/yolo26s-pose.pt"/>
+  <arg name="model_path" default="$(find-pkg-share demo2)/model/yolo26s-pose.pt"/>
   <arg name="camera_id" default="0"/>
   <arg name="use_camera_topic" default="false"/>
   <arg name="image_topic" default="/camera/image_raw"/>

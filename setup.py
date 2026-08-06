@@ -3,7 +3,7 @@ import os
 
 from setuptools import find_packages, setup
 
-package_name = 'demo2v2'
+package_name = 'demo2'
 
 
 def package_files(relative_dir):
@@ -17,7 +17,8 @@ def package_files(relative_dir):
 setup(
     name=package_name,
     version='0.0.0',
-    packages=find_packages(exclude=['test']),
+    packages=find_packages(where='src', exclude=['test']),
+    package_dir={'': 'src'},
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -39,9 +40,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'arm_yolo26s_v2 = demo2v2.arm_yolo26s_v2:main',
-            'position_to_angle_v2 = demo2v2.position_to_angle_v2:main',
-            'arm_driver = demo2v2.arm_driver:main',
+            'arm_yolo26s_v2 = demo2.arm_yolo26s_v2:main',
+            'position_to_angle_v2 = demo2.position_to_angle_v2:main',
         ],
     },
 )

@@ -1,7 +1,10 @@
+from pathlib import Path
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch.substitutions import PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -78,14 +81,11 @@ ARG_DEFAULTS = {
 
 
 def robot_description():
-    model = PathJoinSubstitution([
-        FindPackageShare("demo2"),
-        "urdf",
-        "nero_description.urdf",
-    ])
-    return {
-        "robot_description": ParameterValue(Command(["xacro ", model]), value_type=str)
-    }
+    model = (
+        Path(get_package_share_directory("demo2"))
+        / "urdf/nero_description.urdf"
+    )
+    return {"robot_description": model.read_text(encoding="utf-8")}
 
 
 def state_publisher(namespace, y_offset, pitch, yaw):

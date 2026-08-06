@@ -140,8 +140,8 @@ def robust_depth_at_pixel(
     depth_m,
     pixel,
     radius=4,
-    min_depth_m=0.25,
-    max_depth_m=4.0,
+    min_depth_m=0.15,
+    max_depth_m=5.0,
     min_valid_pixels=4,
     cluster_tolerance_m=0.08,
 ):
@@ -188,8 +188,8 @@ class DepthLandmarkReconstructor:
     def __init__(
         self,
         radius=4,
-        min_depth_m=0.25,
-        max_depth_m=4.0,
+        min_depth_m=0.15,
+        max_depth_m=5.0,
         min_valid_pixels=4,
         cluster_tolerance_m=0.08,
     ):
@@ -199,7 +199,9 @@ class DepthLandmarkReconstructor:
         self.min_valid_pixels = int(min_valid_pixels)
         self.cluster_tolerance_m = float(cluster_tolerance_m)
 
-    def reconstruct(self, pixels, depth_m, intrinsics):
+    @staticmethod
+    def validate_inputs(pixels, depth_m, intrinsics):
+        """Validate aligned landmark and depth dimensions."""
         pixels = np.asarray(pixels, dtype=float)
         if pixels.shape != (8, 2):
             raise ValueError("expected eight 2-D arm/hip landmarks")
@@ -207,6 +209,11 @@ class DepthLandmarkReconstructor:
             raise ValueError(
                 "aligned depth dimensions do not match color CameraInfo"
             )
+        return pixels
+
+    def reconstruct_partial(self, pixels, depth_m, intrinsics):
+        """Return per-landmark XYZ, using NaN where depth is unavailable."""
+        pixels = self.validate_inputs(pixels, depth_m, intrinsics)
         points = []
         depths = []
         for pixel in pixels:
@@ -220,7 +227,18 @@ class DepthLandmarkReconstructor:
                 self.cluster_tolerance_m,
             )
             if depth is None:
-                return None, None
-            points.append(intrinsics.deproject(pixel, depth))
+                points.append(np.full(3, np.nan, dtype=float))
+                depths.append(np.nan)
+                continue
+            points.append(intrinsics.deproject(pixel, depth).astype(float))
             depths.append(depth)
         return np.asarray(points), np.asarray(depths)
+
+    def reconstruct(self, pixels, depth_m, intrinsics):
+        """Return all eight XYZ landmarks only when every depth is valid."""
+        points, depths = self.reconstruct_partial(
+            pixels, depth_m, intrinsics
+        )
+        if not np.all(np.isfinite(points)):
+            return None, None
+        return points, depths

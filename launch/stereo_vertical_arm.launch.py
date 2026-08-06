@@ -1,22 +1,22 @@
 """RViz dry-run launch for the independent vertical-stereo follower."""
 
 import sys
+from pathlib import Path
 
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
-from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
 def robot_description():
-    model = PathJoinSubstitution(
-        [FindPackageShare("demo2"), "urdf", "nero_description.urdf"]
+    model = (
+        Path(get_package_share_directory("demo2"))
+        / "urdf/nero_description.urdf"
     )
-    return {
-        "robot_description": ParameterValue(Command(["xacro ", model]), value_type=str)
-    }
+    return {"robot_description": model.read_text(encoding="utf-8")}
 
 
 def state_publishers(namespace, y_offset, pitch, yaw):

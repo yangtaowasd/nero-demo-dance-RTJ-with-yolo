@@ -32,7 +32,7 @@ a non-runnable template.
 
 ```bash
 cd /home/yang/demo_ws
-colcon build --packages-select nero_assets demo2
+colcon build --packages-select demo2
 source /home/yang/agx_arm_ws/install/setup.bash
 source install/setup.bash
 ros2 launch demo2 stereo_vertical_arm.launch.py \

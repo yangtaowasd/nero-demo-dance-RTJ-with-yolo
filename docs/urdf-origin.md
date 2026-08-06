@@ -1,7 +1,8 @@
 # URDF origin
 
 `demo2` installs and loads its own Nero URDF files from `urdf/`. The mesh
-files referenced by the model are supplied by `agx_arm_description`.
+files referenced by the model are supplied by the renamed `armbycontroller`
+ROS package.
 
 ## Upstream
 
@@ -25,5 +26,8 @@ Xacro files, so the model was not copied from `pyAgxArm`.
 ## Dependency boundary
 
 - `demo2`: runtime logic plus its YOLO model, URDF, and RViz files.
-- `agx_arm_description`: upstream mesh resources used by the URDF.
+- `armbycontroller`: upstream mesh resources used by the URDF.
 - `pyAgxArm`: Nero hardware API used by the driver code.
+
+The bundled librealsense2 runtime under `third_party/librealsense2` is Apache
+2.0 licensed; its package copyright notice is retained alongside the binary.
