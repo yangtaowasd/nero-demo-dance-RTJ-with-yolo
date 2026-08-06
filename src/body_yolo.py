@@ -9,6 +9,11 @@ from collections import deque
 from ultralytics import YOLO
 from scipy.optimize import linear_sum_assignment  # 用于匈牙利匹配
 import time
+from ament_index_python.packages import get_package_share_directory
+
+
+def default_yolo26n_pose_path():
+    return get_package_share_directory("nero_assets") + "/model/yolo26n-pose.pt"
 
 
 class SimplePoseTracker:
@@ -92,7 +97,7 @@ class BodyPoseNode(Node):
         super().__init__('yolo_body_pose_node')
 
         # ----- 参数声明 -----
-        self.declare_parameter('model_path', '/home/yang/demo_ws/src/demo2/model/yolo26s-pose.pt')
+        self.declare_parameter('model_path', default_yolo26n_pose_path())
         self.declare_parameter('camera_id', 0)
         self.declare_parameter('conf_thres', 0.5)
         self.declare_parameter('arm_conf_thres', 0.7)

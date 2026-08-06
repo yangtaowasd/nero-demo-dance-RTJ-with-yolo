@@ -3,6 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
+from pyAgxArm.api.constants import ROBOT_JOINT_LIMIT_PRESET_RAD
 from arm_and_revo2 import *
 
 
@@ -28,15 +29,10 @@ class ArmDriverNode(Node):
         self.max_command_delta = float(self.get_parameter("max_command_delta").value)
         self.execute_motion = bool(self.get_parameter("execute_motion").value)
 
-        # 关节限位，单位 rad
+        # 关节限位，单位 rad，来自 pyAgxArm 官方 Nero 常量。
         self.limits = [
-            [-2.96, 2.96],
-            [-2.96, 2.96],
-            [-2.96, 2.96],
-            [-2.96, 2.96],
-            [-2.96, 2.96],
-            [-2.96, 2.96],
-            [-2.96, 2.96],
+            list(ROBOT_JOINT_LIMIT_PRESET_RAD["nero"][f"joint{i}"])
+            for i in range(1, 8)
         ]
 
         self.angle_sub = self.create_subscription(

@@ -7,6 +7,7 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -20,9 +21,15 @@ install(PROGRAMS
   src/body_yolo.py
   src/arm_driver.py
   src/position_to_angle.py
+  src/position_to_angle_agx.py
   src/ik_test_publisher.py
+  src/demo2/arm_mediapipe3d.py
+  src/demo2/arm_yolo26s_v2.py
+  src/demo2/position_to_angle_v2.py
   DESTINATION lib/${PROJECT_NAME}
 )
+
+ament_python_install_package(${PROJECT_NAME} PACKAGE_DIR src/${PROJECT_NAME})
 
 install(FILES
   src/arm_and_revo2.py
@@ -31,10 +38,18 @@ install(FILES
 
 install(DIRECTORY
   launch
+  config
+  urdf
   DESTINATION share/${PROJECT_NAME}
 )
 
+install(FILES
+  model/yolo26s-pose.pt
+  DESTINATION share/${PROJECT_NAME}/model
+)
+
 if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files
@@ -44,6 +59,14 @@ if(BUILD_TESTING)
   # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+  ament_add_pytest_test(
+    pose_mapping test/test_pose_mapping.py
+    APPEND_ENV PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  ament_add_pytest_test(
+    pose_retargeting_3d test/test_pose_retargeting_3d.py
+    APPEND_ENV PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
 endif()
 
 ament_package()
