@@ -5,6 +5,7 @@ from launch.actions import (
     DeclareLaunchArgument,
     GroupAction,
     IncludeLaunchDescription,
+    SetEnvironmentVariable,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -42,42 +43,52 @@ def package_launch(filename, arguments):
 def generate_launch_description():
     """Build the one-command RealSense arm pipeline."""
     defaults = {
-        "camera_namespace": "camera",
-        "camera_name": "camera",
-        "serial_no": "''",
+        "camera_namespace": "usb_realsense",
+        "camera_name": "d435i",
+        "serial_no": "'108322074190'",
         "color_profile": "640x480x30",
         "depth_profile": "640x480x30",
         "initial_reset": "false",
         "spatial_filter_enabled": "false",
         "temporal_filter_enabled": "true",
-        "pose_topic": "/realsense/arm_pose_3d",
         "landmarks_topic": "/realsense/landmarks_3d",
         "debug_image_topic": "/realsense/arm_pose_debug",
-        "detector_backend": "yolo",
         "model_path": PathJoinSubstitution([
-            FindPackageShare("demo2"), "model", "yolo26n-pose.pt"
+            FindPackageShare("demo2"),
+            "model",
+            "yolo26n-pose.torchscript",
         ]),
-        "person_confidence": "0.45",
-        "min_landmark_confidence": "0.45",
-        "min_torso_confidence": "0.55",
-        "model_complexity": "0",
+        "inference_size": "384",
+        "torch_threads": "1",
+        "person_confidence": "0.30",
+        "min_landmark_confidence": "0.35",
+        "min_torso_confidence": "0.45",
+        "torso_hold_sec": "0.25",
+        "target_lock_enabled": "true",
+        "target_lock_min_iou": "0.05",
+        "target_lock_max_center_distance_ratio": "1.25",
+        "target_lock_max_missed_frames": "8",
+        "keypoint_smoothing_alpha": "0.55",
         "depth_uint16_scale": "0.001",
         "depth_window_radius": "4",
         "min_valid_depth_pixels": "4",
         "depth_cluster_tolerance_m": "0.08",
         "min_depth_m": "0.15",
         "max_depth_m": "5.0",
-        "sync_tolerance_sec": "0.05",
+        "sync_tolerance_sec": "0.02",
+        "sync_wait_sec": "0.02",
         "show_gui": "true",
         "publish_debug_image": "true",
-        "point_smoothing_alpha": "0.45",
+        "point_smoothing_alpha": "0.30",
+        "point_median_window": "3",
         "max_point_jump_m": "0.25",
         "bone_length_tolerance_ratio": "0.30",
         "neutral_calibration_sec": "3.0",
         "calibration_min_samples": "8",
         "calibration_file": (
-            "~/.ros/demo2/realsense_person_calibration.json"
+            "~/.ros/demo2/person_calibration_108322074190.json"
         ),
+        "calibration_camera_id": "108322074190",
         "load_calibration_on_start": "true",
         "calibration_max_translation_step_m": "0.08",
         "calibration_max_rotation_step_deg": "12.0",
@@ -86,6 +97,8 @@ def generate_launch_description():
         "max_person_rotation_deg": "100.0",
         "max_direction_error_deg": "25.0",
         "max_joint_speed_deg_sec": "120.0",
+        "joint_smoothing_tau_sec": "0.20",
+        "joint_deadband_deg": "0.35",
         "pose_timeout_sec": "0.35",
         "publish_joint_states_enabled": "true",
         "start_rviz": "true",
@@ -93,6 +106,25 @@ def generate_launch_description():
         "person_camera_pose_topic": "/realsense/person_camera_pose",
         "person_relative_pose_topic": "/realsense/person_relative_pose",
         "calibration_status_topic": "/realsense/calibration_status",
+        "left_tracking_status_topic": "/left/tracking_status",
+        "right_tracking_status_topic": "/right/tracking_status",
+        "start_hardware": "false",
+        "left_hardware_enabled": "true",
+        "right_hardware_enabled": "true",
+        "left_can_interface": "can0",
+        "right_can_interface": "can1",
+        "left_firmware": "auto",
+        "right_firmware": "auto",
+        "hardware_execute_motion": "false",
+        "disable_on_shutdown": "false",
+        "hardware_rate_hz": "20.0",
+        "hardware_command_timeout_sec": "0.35",
+        "hardware_feedback_timeout_sec": "0.50",
+        "hardware_connect_timeout_sec": "2.0",
+        "hardware_reconnect_interval_sec": "2.0",
+        "hardware_enable_timeout_sec": "5.0",
+        "hardware_max_command_speed_deg_sec": "30.0",
+        "hardware_speed_percent": "20",
     }
     camera_names = (
         "camera_namespace",
@@ -118,6 +150,9 @@ def generate_launch_description():
         name: LaunchConfiguration(name) for name in pipeline_names
     })
     return LaunchDescription([
+        SetEnvironmentVariable(
+            name="ROS_LOCALHOST_ONLY", value="1"
+        ),
         *[
             DeclareLaunchArgument(name, default_value=value)
             for name, value in defaults.items()

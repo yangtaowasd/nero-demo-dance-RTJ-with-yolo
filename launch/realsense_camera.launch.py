@@ -10,6 +10,7 @@ from launch.actions import (
     GroupAction,
     IncludeLaunchDescription,
     LogInfo,
+    SetEnvironmentVariable,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -23,7 +24,7 @@ def typed(name, value_type):
 
 
 def camera_driver_action():
-    """Use the official driver when installed, otherwise use the local bridge."""
+    """Use the official driver or the local librealsense bridge."""
     try:
         driver_share = get_package_share_directory("realsense2_camera")
     except PackageNotFoundError:
@@ -92,9 +93,9 @@ def camera_driver_action():
 def generate_launch_description():
     """Build the camera-only launch description."""
     defaults = {
-        "camera_namespace": "camera",
-        "camera_name": "camera",
-        "serial_no": "''",
+        "camera_namespace": "usb_realsense",
+        "camera_name": "d435i",
+        "serial_no": "'108322074190'",
         "color_profile": "640x480x30",
         "depth_profile": "640x480x30",
         "initial_reset": "false",
@@ -102,6 +103,9 @@ def generate_launch_description():
         "temporal_filter_enabled": "true",
     }
     return LaunchDescription([
+        SetEnvironmentVariable(
+            name="ROS_LOCALHOST_ONLY", value="1"
+        ),
         *[
             DeclareLaunchArgument(name, default_value=value)
             for name, value in defaults.items()

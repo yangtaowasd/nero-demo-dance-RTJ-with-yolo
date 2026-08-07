@@ -23,10 +23,13 @@ To isolate a fault, launch only `depth_pose_detector.launch.py` with the same
 three topic overrides and inspect `/realsense/arm_pose_debug`. Then launch
 `depth_arm_control.launch.py` separately once the eight-point output is stable.
 
-The detector rejects timestamp mismatches, invalid depth, and missing pose
-landmarks. The controller independently rejects excessive 3-D jumps,
-implausible limb-length changes, stale input, and poor IK solutions. An invalid
-frame closes the hardware-command gate.
+The detector rejects timestamp mismatches and marks missing depth per
+landmark. The controller independently rejects excessive 3-D jumps,
+implausible limb-length changes, stale input, and poor IK solutions. Each arm
+holds its latest pose through a brief dropout, then closes only its own
+hardware-command gate after `pose_timeout_sec`. After calibration, a valid
+torso may be reused for `torso_hold_sec` while one shoulder/hip depth sample
+recovers; this never extends the independent hardware timeout.
 
 See [RealSense depth recognition](realsense-depth-follower.md) for the portable
 point-cloud contract and migration instructions.

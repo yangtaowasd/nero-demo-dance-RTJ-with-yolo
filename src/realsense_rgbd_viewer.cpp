@@ -272,11 +272,12 @@ private:
     sensor_msgs::msg::CameraInfo camera_info)
   {
     const auto stamp = now();
-    color_publisher_->publish(image_message(color, "bgr8", stamp));
-    depth_publisher_->publish(image_message(depth, "16UC1", stamp));
     camera_info.header.stamp = stamp;
     camera_info.header.frame_id = frame_id_;
     info_publisher_->publish(camera_info);
+    depth_publisher_->publish(image_message(depth, "16UC1", stamp));
+    // Color is the detector trigger, so publish it after its matching depth.
+    color_publisher_->publish(image_message(color, "bgr8", stamp));
     if (publish_composite_) {
       composite_publisher_->publish(image_message(composite, "bgr8", stamp));
     }
@@ -294,7 +295,19 @@ private:
     config.enable_stream(
       RS2_STREAM_DEPTH, depth_width_, depth_height_, RS2_FORMAT_Z16, depth_fps_);
     const auto profile = pipeline.start(config);
-    const auto depth_scale = profile.get_device().first<rs2::depth_sensor>().get_depth_scale();
+    const auto device = profile.get_device();
+    const auto active_serial =
+      device.supports(RS2_CAMERA_INFO_SERIAL_NUMBER) ?
+      std::string(device.get_info(RS2_CAMERA_INFO_SERIAL_NUMBER)) : "unknown";
+    const auto physical_port =
+      device.supports(RS2_CAMERA_INFO_PHYSICAL_PORT) ?
+      std::string(device.get_info(RS2_CAMERA_INFO_PHYSICAL_PORT)) : "unknown";
+    const auto usb_type =
+      device.supports(RS2_CAMERA_INFO_USB_TYPE_DESCRIPTOR) ?
+      std::string(device.get_info(RS2_CAMERA_INFO_USB_TYPE_DESCRIPTOR)) :
+      "unknown";
+    const auto depth_scale =
+      device.first<rs2::depth_sensor>().get_depth_scale();
     const auto video_profile = profile.get_stream(RS2_STREAM_COLOR).as<rs2::video_stream_profile>();
     const auto camera_info = camera_info_from(video_profile.get_intrinsics());
     rs2::align align_to_color(RS2_STREAM_COLOR);
@@ -303,7 +316,11 @@ private:
     bool window_created = false;
     std::size_t frame_count = 0;
     auto rate_start = std::chrono::steady_clock::now();
-    RCLCPP_INFO(get_logger(), "RealSense connected; C++ aligned RGB-D is running");
+    RCLCPP_INFO(
+      get_logger(),
+      "Local USB RealSense connected: serial=%s usb=%s port=%s; "
+      "C++ aligned RGB-D is running",
+      active_serial.c_str(), usb_type.c_str(), physical_port.c_str());
 
     try {
       while (running_.load() && rclcpp::ok()) {

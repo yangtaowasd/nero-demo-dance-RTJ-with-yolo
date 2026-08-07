@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from demo2.stereo_arm_geometry import torso_basis
+from demo2.arm_geometry import torso_basis
 
 
 def torso_pose(points):
@@ -66,22 +66,6 @@ def rotation_angle_deg(rotation):
     rotation = project_to_rotation(rotation)
     cosine = np.clip((np.trace(rotation) - 1.0) * 0.5, -1.0, 1.0)
     return float(np.rad2deg(np.arccos(cosine)))
-
-
-def rotation_to_rpy(rotation):
-    """Return ZYX roll, pitch, and yaw angles in radians."""
-    rotation = project_to_rotation(rotation)
-    pitch = np.arctan2(
-        -rotation[2, 0],
-        np.hypot(rotation[0, 0], rotation[1, 0]),
-    )
-    if abs(np.cos(pitch)) > 1e-7:
-        roll = np.arctan2(rotation[2, 1], rotation[2, 2])
-        yaw = np.arctan2(rotation[1, 0], rotation[0, 0])
-    else:
-        roll = 0.0
-        yaw = np.arctan2(-rotation[0, 1], rotation[1, 1])
-    return np.asarray([roll, pitch, yaw], dtype=float)
 
 
 def rotation_to_quaternion(rotation):
@@ -240,6 +224,7 @@ class PersonCameraReference:
     """Persisted neutral person pose and arm calibration."""
 
     frame_id: str
+    camera_id: str
     origin_camera_m: np.ndarray
     basis_camera: np.ndarray
     left_correction: np.ndarray
@@ -248,6 +233,9 @@ class PersonCameraReference:
 
     def __post_init__(self):
         """Normalize and validate persisted reference fields."""
+        camera_id = str(self.camera_id).strip()
+        if not camera_id:
+            raise ValueError("calibration camera identity must not be empty")
         origin = np.asarray(self.origin_camera_m, dtype=float).reshape(3)
         basis = project_to_rotation(self.basis_camera)
         left = project_to_rotation(self.left_correction)
@@ -266,6 +254,7 @@ class PersonCameraReference:
                 "reference bone lengths must be complete or absent"
             )
         object.__setattr__(self, "origin_camera_m", origin)
+        object.__setattr__(self, "camera_id", camera_id)
         object.__setattr__(self, "basis_camera", basis)
         object.__setattr__(self, "left_correction", left)
         object.__setattr__(self, "right_correction", right)
@@ -274,8 +263,9 @@ class PersonCameraReference:
     def to_dict(self):
         """Return a JSON-serializable calibration record."""
         return {
-            "version": 2,
+            "version": 3,
             "frame_id": self.frame_id,
+            "camera_id": self.camera_id,
             "origin_camera_m": self.origin_camera_m.tolist(),
             "basis_camera": self.basis_camera.tolist(),
             "left_correction": self.left_correction.tolist(),
@@ -290,10 +280,11 @@ class PersonCameraReference:
     @classmethod
     def from_dict(cls, values):
         """Validate and construct a reference from serialized values."""
-        if int(values.get("version", 0)) != 2:
+        if int(values.get("version", 0)) != 3:
             raise ValueError("unsupported person calibration version")
         return cls(
             str(values["frame_id"]),
+            str(values["camera_id"]),
             values["origin_camera_m"],
             values["basis_camera"],
             values["left_correction"],

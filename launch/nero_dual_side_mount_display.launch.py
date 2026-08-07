@@ -2,7 +2,16 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.substitutions import PathJoinSubstitution
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    RegisterEventHandler,
+    TimerAction,
+)
+from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -55,42 +64,37 @@ def generate_launch_description():
         "dual_nero.rviz",
     ])
 
-    return LaunchDescription([
+    pose_guard = Node(
+        package="demo2",
+        executable="dual_joint_state_publisher.py",
+        name="dual_joint_state_publisher",
+        output="screen",
+    )
+    display_nodes = [
         *state_publisher("left", 0.35, -1.5707963, -1.5707963),
         *state_publisher("right", -0.35, -1.5707963, 1.5707963),
-        Node(
-            package="joint_state_publisher_gui",
-            executable="joint_state_publisher_gui",
-            name="left_joint_state_publisher_gui",
-            parameters=[
-                robot_description(),
-                {"zeros": {"joint2": 1.5707963}},
-            ],
-            remappings=[
-                ("joint_states", "/left/joint_states"),
-                ("robot_description", "/left/robot_description"),
-            ],
-            output="screen",
-        ),
-        Node(
-            package="joint_state_publisher_gui",
-            executable="joint_state_publisher_gui",
-            name="right_joint_state_publisher_gui",
-            parameters=[
-                robot_description(),
-                {"zeros": {"joint2": 1.5707963}},
-            ],
-            remappings=[
-                ("joint_states", "/right/joint_states"),
-                ("robot_description", "/right/robot_description"),
-            ],
-            output="screen",
-        ),
         Node(
             package="rviz2",
             executable="rviz2",
             name="dual_nero_rviz",
             arguments=["-d", rviz_config],
+            condition=IfCondition(LaunchConfiguration("start_rviz")),
             output="screen",
         ),
+    ]
+
+    return LaunchDescription([
+        DeclareLaunchArgument("start_rviz", default_value="true"),
+        pose_guard,
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=pose_guard,
+                on_exit=[
+                    EmitEvent(event=Shutdown(
+                        reason="dual display singleton guard stopped"
+                    ))
+                ],
+            )
+        ),
+        TimerAction(period=1.0, actions=display_nodes),
     ])

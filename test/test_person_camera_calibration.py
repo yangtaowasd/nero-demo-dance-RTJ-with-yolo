@@ -10,7 +10,6 @@ from demo2.person_camera_calibration import (
     relative_person_pose,
     rotation_angle_deg,
     rotation_to_quaternion,
-    rotation_to_rpy,
     torso_pose,
 )
 
@@ -70,15 +69,13 @@ def test_relative_pose_recovers_motion_in_reference_axes():
     assert rotation_angle_deg(relative_rotation) == pytest.approx(20.0)
 
 
-def test_rotation_outputs_are_normalized_and_consistent():
-    """Rotation matrix conversions preserve the requested rotation."""
+def test_rotation_quaternion_is_normalized():
+    """Rotation conversion returns a unit quaternion."""
     rotation = z_rotation(np.deg2rad(30.0))
 
     quaternion = rotation_to_quaternion(rotation)
-    rpy = rotation_to_rpy(rotation)
 
     assert np.linalg.norm(quaternion) == pytest.approx(1.0)
-    np.testing.assert_allclose(rpy, [0.0, 0.0, np.deg2rad(30.0)])
 
 
 def test_rotation_average():
@@ -96,6 +93,7 @@ def test_reference_round_trip(tmp_path):
     origin, basis = torso_pose(front_facing_pose())
     reference = PersonCameraReference(
         "camera_color_optical_frame",
+        "camera-serial-1",
         origin,
         basis,
         np.eye(3),
@@ -108,6 +106,7 @@ def test_reference_round_trip(tmp_path):
     loaded = PersonCameraReference.load(path)
 
     assert loaded.frame_id == reference.frame_id
+    assert loaded.camera_id == reference.camera_id
     np.testing.assert_allclose(loaded.origin_camera_m, origin)
     np.testing.assert_allclose(loaded.basis_camera, basis)
 
@@ -128,6 +127,7 @@ def test_reference_can_be_saved_before_arm_lengths_are_available(tmp_path):
     origin, basis = torso_pose(front_facing_pose())
     reference = PersonCameraReference(
         "camera_color_optical_frame",
+        "camera-serial-1",
         origin,
         basis,
         np.eye(3),
@@ -140,6 +140,24 @@ def test_reference_can_be_saved_before_arm_lengths_are_available(tmp_path):
     loaded = PersonCameraReference.load(path)
 
     assert np.all(np.isnan(loaded.bone_lengths_m))
+
+
+def test_legacy_camera_agnostic_reference_is_rejected():
+    """A calibration from an unknown camera can never be reused silently."""
+    values = PersonCameraReference(
+        "camera_color_optical_frame",
+        "camera-serial-1",
+        [0.0, 0.0, 1.0],
+        np.eye(3),
+        np.eye(3),
+        np.eye(3),
+        None,
+    ).to_dict()
+    values["version"] = 2
+    values.pop("camera_id")
+
+    with pytest.raises(ValueError, match="unsupported"):
+        PersonCameraReference.from_dict(values)
 
 
 def test_stable_samples_ignore_one_detector_outlier():

@@ -4,8 +4,15 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    RegisterEventHandler,
+    TimerAction,
+)
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -55,14 +62,15 @@ def generate_launch_description():
     """Build the robot-control-only launch description."""
     share = FindPackageShare("demo2")
     defaults = {
-        "pose_topic": "/realsense/arm_pose_3d",
         "landmarks_topic": "/realsense/landmarks_3d",
         "urdf_file": PathJoinSubstitution(
             [share, "urdf", "nero_description.urdf"]
         ),
-        "min_landmark_confidence": "0.45",
-        "min_torso_confidence": "0.55",
-        "point_smoothing_alpha": "0.45",
+        "min_landmark_confidence": "0.35",
+        "min_torso_confidence": "0.45",
+        "torso_hold_sec": "0.25",
+        "point_smoothing_alpha": "0.30",
+        "point_median_window": "3",
         "max_point_jump_m": "0.25",
         "bone_length_tolerance_ratio": "0.30",
         "neutral_calibration_sec": "3.0",
@@ -70,6 +78,7 @@ def generate_launch_description():
         "calibration_file": (
             "~/.ros/demo2/realsense_person_calibration.json"
         ),
+        "calibration_camera_id": "unspecified",
         "load_calibration_on_start": "true",
         "calibration_max_translation_step_m": "0.08",
         "calibration_max_rotation_step_deg": "12.0",
@@ -78,6 +87,8 @@ def generate_launch_description():
         "max_person_rotation_deg": "100.0",
         "max_direction_error_deg": "25.0",
         "max_joint_speed_deg_sec": "120.0",
+        "joint_smoothing_tau_sec": "0.20",
+        "joint_deadband_deg": "0.35",
         "pose_timeout_sec": "0.35",
         "publish_joint_states_enabled": "true",
         "command_output_enabled": "false",
@@ -85,20 +96,23 @@ def generate_launch_description():
         "right_joint_state_topic": "/right/joint_states",
         "left_command_topic": "/left/neroarm/command_joints",
         "right_command_topic": "/right/neroarm/command_joints",
+        "left_tracking_status_topic": "/left/tracking_status",
+        "right_tracking_status_topic": "/right/tracking_status",
         "person_camera_pose_topic": "/realsense/person_camera_pose",
         "person_relative_pose_topic": "/realsense/person_relative_pose",
         "calibration_status_topic": "/realsense/calibration_status",
         "start_rviz": "true",
     }
     parameters = {
-        "pose_topic": LaunchConfiguration("pose_topic"),
         "landmarks_topic": LaunchConfiguration("landmarks_topic"),
         "urdf_file": LaunchConfiguration("urdf_file"),
         "min_landmark_confidence": typed(
             "min_landmark_confidence", float
         ),
         "min_torso_confidence": typed("min_torso_confidence", float),
+        "torso_hold_sec": typed("torso_hold_sec", float),
         "point_smoothing_alpha": typed("point_smoothing_alpha", float),
+        "point_median_window": typed("point_median_window", int),
         "max_point_jump_m": typed("max_point_jump_m", float),
         "bone_length_tolerance_ratio": typed(
             "bone_length_tolerance_ratio", float
@@ -108,6 +122,9 @@ def generate_launch_description():
             "calibration_min_samples", int
         ),
         "calibration_file": LaunchConfiguration("calibration_file"),
+        "calibration_camera_id": typed(
+            "calibration_camera_id", str
+        ),
         "load_calibration_on_start": typed(
             "load_calibration_on_start", bool
         ),
@@ -130,6 +147,10 @@ def generate_launch_description():
         "max_joint_speed_deg_sec": typed(
             "max_joint_speed_deg_sec", float
         ),
+        "joint_smoothing_tau_sec": typed(
+            "joint_smoothing_tau_sec", float
+        ),
+        "joint_deadband_deg": typed("joint_deadband_deg", float),
         "pose_timeout_sec": typed("pose_timeout_sec", float),
         "publish_joint_states_enabled": typed(
             "publish_joint_states_enabled", bool
@@ -143,6 +164,12 @@ def generate_launch_description():
         ),
         "left_command_topic": LaunchConfiguration("left_command_topic"),
         "right_command_topic": LaunchConfiguration("right_command_topic"),
+        "left_tracking_status_topic": LaunchConfiguration(
+            "left_tracking_status_topic"
+        ),
+        "right_tracking_status_topic": LaunchConfiguration(
+            "right_tracking_status_topic"
+        ),
         "person_camera_pose_topic": LaunchConfiguration(
             "person_camera_pose_topic"
         ),
@@ -154,20 +181,16 @@ def generate_launch_description():
         ),
     }
     rviz_config = PathJoinSubstitution([share, "config", "dual_nero.rviz"])
-    return LaunchDescription([
-        *[
-            DeclareLaunchArgument(name, default_value=value)
-            for name, value in defaults.items()
-        ],
+    controller = Node(
+        package="demo2",
+        executable="depth_arm_controller.py",
+        name="depth_arm_controller",
+        parameters=[parameters],
+        output="screen",
+    )
+    display_nodes = [
         *state_publishers("left", 0.35, -1.5707963, -1.5707963),
         *state_publishers("right", -0.35, -1.5707963, 1.5707963),
-        Node(
-            package="demo2",
-            executable="depth_arm_controller.py",
-            name="depth_arm_controller",
-            parameters=[parameters],
-            output="screen",
-        ),
         Node(
             package="rviz2",
             executable="rviz2",
@@ -175,4 +198,22 @@ def generate_launch_description():
             condition=IfCondition(LaunchConfiguration("start_rviz")),
             output="screen",
         ),
+    ]
+    return LaunchDescription([
+        *[
+            DeclareLaunchArgument(name, default_value=value)
+            for name, value in defaults.items()
+        ],
+        controller,
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=controller,
+                on_exit=[
+                    EmitEvent(event=Shutdown(
+                        reason="depth arm controller guard stopped"
+                    ))
+                ],
+            )
+        ),
+        TimerAction(period=1.0, actions=display_nodes),
     ])

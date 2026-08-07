@@ -1,7 +1,7 @@
 """Start the single-process C++ RealSense RGB, depth, and fusion viewer."""
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -15,9 +15,9 @@ def typed(name, value_type):
 def generate_launch_description():
     """Build the C++ camera plus three-panel viewer launch."""
     defaults = {
-        "camera_namespace": "camera",
-        "camera_name": "camera",
-        "serial_no": "''",
+        "camera_namespace": "usb_realsense",
+        "camera_name": "d435i",
+        "serial_no": "'108322074190'",
         "color_profile": "640x480x30",
         "depth_profile": "640x480x30",
         "initial_reset": "false",
@@ -51,6 +51,9 @@ def generate_launch_description():
         "output_topic": LaunchConfiguration("output_topic"),
     }
     return LaunchDescription([
+        SetEnvironmentVariable(
+            name="ROS_LOCALHOST_ONLY", value="1"
+        ),
         *[
             DeclareLaunchArgument(name, default_value=value)
             for name, value in defaults.items()

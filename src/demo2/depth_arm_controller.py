@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Convert portable RGB-D arm landmarks into Nero joint commands."""
 
+from collections import deque
+import os
 from pathlib import Path
+import sys
 import threading
 import time
 
@@ -16,23 +19,76 @@ from sensor_msgs.msg import JointState, PointCloud
 from std_msgs.msg import Float32MultiArray, String
 from std_srvs.srv import Trigger
 
-from demo2.nero_direction_ik import DirectionIK, NeroKinematics
+from demo2.arm_sides import (
+    ARM_LANDMARK_INDICES,
+    DEFAULT_COMMAND_TOPICS,
+    DEFAULT_JOINT_STATE_TOPICS,
+    REQUIRED_LANDMARK_INDICES,
+    SIDES,
+    TORSO_LANDMARK_INDICES,
+    side_landmarks_valid,
+)
+from demo2.dual_joint_state_publisher import acquire_instance_lock
+from demo2.nero_direction_ik import (
+    DirectionIK,
+    NeroKinematics,
+    side_mount_components,
+)
 from demo2.person_camera_calibration import (
     PersonCameraReference,
     StablePoseSamples,
     relative_person_pose,
     rotation_angle_deg,
     rotation_to_quaternion,
-    rotation_to_rpy,
     torso_pose,
 )
-from demo2.stereo_arm_geometry import (
+from demo2.arm_geometry import (
     arm_direction_components,
 )
 
 
-SIDES = ("left", "right")
-TORSO_INDICES = (0, 3, 4, 7)
+DEFAULT_DISPLAY_JOINTS = (0.0, 1.5707963, 0.0, 0.0, 0.0, 0.0, 0.0)
+BONE_CALIBRATION_WINDOW = 12
+BONE_CALIBRATION_MIN_SAMPLES = 8
+
+
+def smooth_joint_target(
+    previous,
+    proposal,
+    dt,
+    smoothing_tau,
+    deadband_rad,
+    max_speed_rad_sec,
+):
+    """Apply joint deadband, time-based smoothing, and a speed limit."""
+    previous = np.asarray(previous, dtype=float)
+    proposal = np.asarray(proposal, dtype=float)
+    dt = max(float(dt), 1e-3)
+    delta = proposal - previous
+    delta[np.abs(delta) < max(float(deadband_rad), 0.0)] = 0.0
+    smoothing_tau = max(float(smoothing_tau), 0.0)
+    alpha = 1.0
+    if smoothing_tau > 1e-6:
+        alpha = 1.0 - np.exp(-dt / smoothing_tau)
+    delta *= alpha
+    maximum_delta = max(float(max_speed_rad_sec), 0.0) * dt
+    return previous + np.clip(delta, -maximum_delta, maximum_delta)
+
+
+def robust_bone_length_baseline(
+    samples, min_samples=BONE_CALIBRATION_MIN_SAMPLES
+):
+    """Return median limb lengths only after enough plausible frames."""
+    values = np.asarray(tuple(samples), dtype=float)
+    if values.ndim != 2 or values.shape[1:] != (4,):
+        return None
+    valid = values[
+        np.all(np.isfinite(values), axis=1)
+        & np.all((values >= 0.12) & (values <= 0.60), axis=1)
+    ]
+    if len(valid) < max(int(min_samples), 1):
+        return None
+    return np.median(valid, axis=0)
 
 
 def default_urdf_path():
@@ -51,12 +107,13 @@ class DepthArmController(Node):
         """Configure calibration, IK, diagnostics, and command gating."""
         super().__init__("depth_arm_controller")
         defaults = {
-            "pose_topic": "/realsense/arm_pose_3d",
             "landmarks_topic": "/realsense/landmarks_3d",
             "urdf_file": default_urdf_path(),
-            "min_landmark_confidence": 0.45,
-            "min_torso_confidence": 0.55,
-            "point_smoothing_alpha": 0.45,
+            "min_landmark_confidence": 0.35,
+            "min_torso_confidence": 0.45,
+            "torso_hold_sec": 0.25,
+            "point_smoothing_alpha": 0.30,
+            "point_median_window": 3,
             "max_point_jump_m": 0.25,
             "bone_length_tolerance_ratio": 0.30,
             "neutral_calibration_sec": 3.0,
@@ -64,6 +121,7 @@ class DepthArmController(Node):
             "calibration_file": (
                 "~/.ros/demo2/realsense_person_calibration.json"
             ),
+            "calibration_camera_id": "unspecified",
             "load_calibration_on_start": True,
             "calibration_max_translation_step_m": 0.08,
             "calibration_max_rotation_step_deg": 12.0,
@@ -72,13 +130,18 @@ class DepthArmController(Node):
             "max_person_rotation_deg": 100.0,
             "max_direction_error_deg": 25.0,
             "max_joint_speed_deg_sec": 120.0,
+            "joint_smoothing_tau_sec": 0.20,
+            "joint_deadband_deg": 0.35,
             "pose_timeout_sec": 0.35,
+            "initial_display_positions": list(DEFAULT_DISPLAY_JOINTS),
             "publish_joint_states_enabled": True,
             "command_output_enabled": False,
-            "left_joint_state_topic": "/left/joint_states",
-            "right_joint_state_topic": "/right/joint_states",
-            "left_command_topic": "/left/neroarm/command_joints",
-            "right_command_topic": "/right/neroarm/command_joints",
+            "left_joint_state_topic": DEFAULT_JOINT_STATE_TOPICS["left"],
+            "right_joint_state_topic": DEFAULT_JOINT_STATE_TOPICS["right"],
+            "left_command_topic": DEFAULT_COMMAND_TOPICS["left"],
+            "right_command_topic": DEFAULT_COMMAND_TOPICS["right"],
+            "left_tracking_status_topic": "/left/tracking_status",
+            "right_tracking_status_topic": "/right/tracking_status",
             "person_camera_pose_topic": "/realsense/person_camera_pose",
             "person_relative_pose_topic": "/realsense/person_relative_pose",
             "calibration_status_topic": "/realsense/calibration_status",
@@ -93,8 +156,12 @@ class DepthArmController(Node):
             value("min_landmark_confidence")
         )
         self.min_torso_confidence = float(value("min_torso_confidence"))
+        self.torso_hold_sec = max(float(value("torso_hold_sec")), 0.0)
         self.smoothing_alpha = float(
             np.clip(float(value("point_smoothing_alpha")), 0.0, 1.0)
+        )
+        self.point_median_window = max(
+            int(value("point_median_window")), 1
         )
         self.max_point_jump = float(value("max_point_jump_m"))
         self.bone_tolerance = float(value("bone_length_tolerance_ratio"))
@@ -103,6 +170,9 @@ class DepthArmController(Node):
         self.calibration_file = Path(
             str(value("calibration_file"))
         ).expanduser()
+        self.calibration_camera_id = str(
+            value("calibration_camera_id")
+        ).strip()
         self.load_calibration_on_start = bool(
             value("load_calibration_on_start")
         )
@@ -125,7 +195,20 @@ class DepthArmController(Node):
         self.max_joint_speed = np.deg2rad(
             float(value("max_joint_speed_deg_sec"))
         )
+        self.joint_smoothing_tau = float(
+            value("joint_smoothing_tau_sec")
+        )
+        self.joint_deadband = np.deg2rad(
+            float(value("joint_deadband_deg"))
+        )
         self.pose_timeout = float(value("pose_timeout_sec"))
+        self.initial_display_positions = np.asarray(
+            value("initial_display_positions"), dtype=float
+        )
+        if self.initial_display_positions.shape != (7,):
+            raise ValueError(
+                "initial_display_positions must contain seven values"
+            )
         self.publish_joint_states_enabled = bool(
             value("publish_joint_states_enabled")
         )
@@ -137,7 +220,10 @@ class DepthArmController(Node):
         self.joint_names = [f"joint{index}" for index in range(1, 8)]
 
         self.data_lock = threading.Lock()
-        self.previous_points = None
+        self.side_previous_points = {side: None for side in SIDES}
+        self.side_point_history = {
+            side: deque(maxlen=self.point_median_window) for side in SIDES
+        }
         self.calibration_samples = StablePoseSamples(
             self.calibration_max_translation_step,
             self.calibration_max_rotation_step,
@@ -145,23 +231,26 @@ class DepthArmController(Node):
         )
         self.corrections = {side: np.eye(3) for side in SIDES}
         self.baseline_bone_lengths = None
+        self.bone_length_samples = deque(
+            maxlen=BONE_CALIBRATION_WINDOW
+        )
         self.reference_origin = None
         self.reference_basis = None
         self.reference_frame_id = None
-        self.latest_relative_translation = None
-        self.latest_relative_rpy = None
-        self.latest_joints = {side: np.zeros(7) for side in SIDES}
-        self.latest_valid = False
-        self.last_valid_time = None
-        self.last_solution_time = None
-        self.latest_status = "waiting for RGB-D pose"
+        self.cached_torso_points = None
+        self.cached_torso_confidence = None
+        self.cached_torso_time = None
+        self.latest_joints = {
+            side: self.initial_display_positions.copy() for side in SIDES
+        }
+        self.target_joints = {
+            side: self.initial_display_positions.copy() for side in SIDES
+        }
+        self.has_joint_solution = {side: False for side in SIDES}
+        self.latest_valid = {side: False for side in SIDES}
+        self.last_valid_time = {side: None for side in SIDES}
+        self.last_publish_filter_time = time.monotonic()
 
-        self.create_subscription(
-            PointCloud,
-            str(value("pose_topic")),
-            self.pose_callback,
-            qos_profile_sensor_data,
-        )
         self.create_subscription(
             PointCloud,
             str(value("landmarks_topic")),
@@ -177,6 +266,12 @@ class DepthArmController(Node):
         self.command_publishers = {
             side: self.create_publisher(
                 Float32MultiArray, str(value(f"{side}_command_topic")), 10
+            )
+            for side in SIDES
+        }
+        self.side_status_publishers = {
+            side: self.create_publisher(
+                String, str(value(f"{side}_tracking_status_topic")), 10
             )
             for side in SIDES
         }
@@ -199,7 +294,9 @@ class DepthArmController(Node):
             "ENABLED" if self.command_output_enabled else "disabled"
         )
         self.get_logger().info(
-            f"depth arm controller ready: pose_topic={value('pose_topic')}; "
+            "depth arm controller ready: anatomical left -> "
+            f"{value('left_joint_state_topic')}, anatomical right -> "
+            f"{value('right_joint_state_topic')}; "
             f"commands={command_state}"
         )
 
@@ -214,17 +311,34 @@ class DepthArmController(Node):
         ])
 
     @staticmethod
-    def confidence_values(message):
-        """Read the optional confidence channel from a PointCloud."""
+    def channel_values(message, name):
+        """Read one optional numeric channel from a PointCloud."""
         for channel in message.channels:
-            if channel.name == "confidence":
+            if channel.name == name:
                 return np.asarray(channel.values, dtype=float)
         return None
 
+    @classmethod
+    def confidence_values(cls, message):
+        """Read the optional confidence channel from a PointCloud."""
+        return cls.channel_values(message, "confidence")
+
+    @staticmethod
+    def side_bone_lengths(points, side):
+        """Return upper-arm and forearm lengths for one anatomical side."""
+        shoulder, elbow, wrist = ARM_LANDMARK_INDICES[side]
+        return np.asarray([
+            np.linalg.norm(points[elbow] - points[shoulder]),
+            np.linalg.norm(points[wrist] - points[elbow]),
+        ])
+
     def publish_status(self, status):
         """Publish a human-readable calibration/control state."""
-        self.latest_status = str(status)
         self.calibration_status_publisher.publish(String(data=str(status)))
+
+    def publish_side_status(self, side, status):
+        """Publish an independently observable status for one arm."""
+        self.side_status_publishers[side].publish(String(data=str(status)))
 
     def apply_reference(self, reference):
         """Load a validated person reference into the live controller."""
@@ -239,6 +353,7 @@ class DepthArmController(Node):
             self.baseline_bone_lengths = reference.bone_lengths_m.copy()
         else:
             self.baseline_bone_lengths = None
+        self.bone_length_samples.clear()
 
     def load_reference(self):
         """Load a saved camera-to-person reference when available."""
@@ -249,22 +364,28 @@ class DepthArmController(Node):
             return False
         try:
             reference = PersonCameraReference.load(self.calibration_file)
+            if reference.camera_id != self.calibration_camera_id:
+                raise ValueError(
+                    "saved calibration belongs to camera "
+                    f"{reference.camera_id!r}, current camera is "
+                    f"{self.calibration_camera_id!r}"
+                )
             self.apply_reference(reference)
         except (OSError, ValueError, KeyError) as exc:
             self.get_logger().warning(
                 f"person-camera calibration load failed: {exc}"
             )
             return False
-        self.publish_status(
-            f"loaded person-camera calibration: {self.calibration_file}"
-        )
-        self.get_logger().info(self.latest_status)
+        status = f"loaded person-camera calibration: {self.calibration_file}"
+        self.publish_status(status)
+        self.get_logger().info(status)
         return True
 
     def save_reference(self):
         """Persist the completed person-camera reference."""
         reference = PersonCameraReference(
             self.reference_frame_id,
+            self.calibration_camera_id,
             self.reference_origin,
             self.reference_basis,
             self.corrections["left"],
@@ -279,18 +400,28 @@ class DepthArmController(Node):
         self.reference_basis = None
         self.reference_frame_id = None
         self.baseline_bone_lengths = None
+        self.bone_length_samples.clear()
         self.corrections = {side: np.eye(3) for side in SIDES}
         self.calibration_samples.reset()
-        self.previous_points = None
-        self.last_solution_time = None
-        self.latest_relative_translation = None
-        self.latest_relative_rpy = None
+        self.cached_torso_points = None
+        self.cached_torso_confidence = None
+        self.cached_torso_time = None
+        for side in SIDES:
+            self.side_previous_points[side] = None
+            self.side_point_history[side].clear()
         with self.data_lock:
-            self.latest_valid = False
-            self.last_valid_time = None
             for side in SIDES:
-                self.latest_joints[side] = np.zeros(7)
+                self.latest_valid[side] = False
+                self.has_joint_solution[side] = False
+                self.last_valid_time[side] = None
+                self.latest_joints[side] = (
+                    self.initial_display_positions.copy()
+                )
+                self.target_joints[side] = (
+                    self.initial_display_positions.copy()
+                )
                 self.solvers[side].previous = np.zeros(7)
+            self.last_publish_filter_time = time.monotonic()
 
     def recalibrate_callback(self, _request, response):
         """Start a fresh natural-standing calibration via Trigger service."""
@@ -301,7 +432,10 @@ class DepthArmController(Node):
             response.success = False
             response.message = f"could not clear calibration file: {exc}"
             return response
-        status = "recalibration started: stand naturally and keep still"
+        status = (
+            "recalibration started: stand naturally and keep still; "
+            "keep both shoulders and hips visible; arm pose is unrestricted"
+        )
         self.publish_status(status)
         self.get_logger().info(status)
         response.success = True
@@ -343,83 +477,104 @@ class DepthArmController(Node):
                 header, "person_reference", translation, rotation
             )
         )
-        self.latest_relative_translation = translation
-        self.latest_relative_rpy = rotation_to_rpy(rotation)
         return origin, basis, translation, rotation
 
-    def decode_pose(self, message):
-        """Validate and decode the eight-point transport message."""
+    def decode_landmark_state(self, message):
+        """Decode partial points and per-landmark confidence/depth flags."""
         if len(message.points) != 8:
-            return None, "waiting for eight RGB-D landmarks"
+            return None, None, None, "waiting for eight RGB-D landmarks"
         points = np.asarray(
             [[point.x, point.y, point.z] for point in message.points],
             dtype=float,
         )
-        if not np.all(np.isfinite(points)):
-            return None, "non-finite RGB-D landmark"
         confidence = self.confidence_values(message)
-        if confidence is not None:
-            if confidence.shape != (8,) or not np.all(np.isfinite(confidence)):
-                return None, "invalid landmark confidence channel"
-            if float(np.min(confidence)) < self.min_landmark_confidence:
-                return None, "low-confidence RGB-D landmark"
-        return points, None
+        if confidence is None:
+            confidence = np.ones(8, dtype=float)
+        if confidence.shape != (8,):
+            return None, None, None, "invalid landmark confidence channel"
+        depth_valid = self.channel_values(message, "depth_valid")
+        if depth_valid is None:
+            depth_valid = np.all(np.isfinite(points), axis=1)
+        if depth_valid.shape != (8,):
+            return None, None, None, "invalid landmark depth channel"
+        return points, confidence, depth_valid >= 0.5, None
 
-    def decode_torso_landmarks(self, message):
-        """Decode shoulder/hip coordinates without requiring arm landmarks."""
-        if len(message.points) != 8:
-            return None, "waiting for shoulder and hip landmarks"
-        points = np.asarray(
-            [[point.x, point.y, point.z] for point in message.points],
-            dtype=float,
-        )
-        torso_points = points[list(TORSO_INDICES)]
+    def prepare_torso_state(
+        self, points, confidence, depth_valid, now=None
+    ):
+        """Use current torso data or a short calibrated torso hold."""
+        points = np.asarray(points, dtype=float).copy()
+        confidence = np.asarray(confidence, dtype=float).copy()
+        depth_valid = np.asarray(depth_valid, dtype=bool).copy()
+        indices = list(TORSO_LANDMARK_INDICES)
+        torso_points = points[indices]
         if not np.all(np.isfinite(torso_points)):
-            return None, "missing shoulder/hip depth for calibration"
-        confidence = self.confidence_values(message)
-        if confidence is not None:
-            if confidence.shape != (8,) or not np.all(
-                np.isfinite(confidence[list(TORSO_INDICES)])
-            ):
-                return None, "invalid torso confidence"
-            if (
-                float(np.min(confidence[list(TORSO_INDICES)]))
-                < self.min_torso_confidence
-            ):
-                return None, "low-confidence shoulder/hip landmark"
-        for channel in message.channels:
-            if channel.name != "depth_valid":
-                continue
-            valid = np.asarray(channel.values, dtype=float)
-            if valid.shape != (8,) or np.any(
-                valid[list(TORSO_INDICES)] < 0.5
-            ):
-                return None, "invalid shoulder/hip depth"
-        return points, None
+            error = "missing shoulder/hip depth"
+        elif not np.all(np.isfinite(confidence[indices])):
+            error = "invalid torso confidence"
+        elif float(np.min(confidence[indices])) < self.min_torso_confidence:
+            error = "low-confidence shoulder/hip landmark"
+        elif not np.all(depth_valid[indices]):
+            error = "invalid shoulder/hip depth"
+        else:
+            timestamp = time.monotonic() if now is None else float(now)
+            self.cached_torso_points = torso_points.copy()
+            self.cached_torso_confidence = confidence[indices].copy()
+            self.cached_torso_time = timestamp
+            return points, confidence, depth_valid, False, None
 
-    def filter_points(self, points):
-        """Apply jump rejection followed by an exponential point filter."""
-        if self.previous_points is None:
-            self.previous_points = points.copy()
-            return points
-        jumps = np.linalg.norm(points - self.previous_points, axis=1)
+        timestamp = time.monotonic() if now is None else float(now)
+        cache_fresh = (
+            self.reference_origin is not None
+            and self.cached_torso_points is not None
+            and self.cached_torso_confidence is not None
+            and self.cached_torso_time is not None
+            and timestamp - self.cached_torso_time <= self.torso_hold_sec
+        )
+        if not cache_fresh:
+            return None, None, None, False, error
+        points[indices] = self.cached_torso_points
+        confidence[indices] = self.cached_torso_confidence
+        depth_valid[indices] = True
+        return points, confidence, depth_valid, True, None
+
+    def filter_side_points(self, points, side):
+        """Filter one arm and its torso inputs without touching the other."""
+        indices = list(REQUIRED_LANDMARK_INDICES[side])
+        selected = np.asarray(points, dtype=float)[indices]
+        previous = self.side_previous_points[side]
+        history = self.side_point_history[side]
+        if previous is None:
+            history.clear()
+            history.append(selected.copy())
+            self.side_previous_points[side] = selected.copy()
+            return np.asarray(points, dtype=float).copy()
+        jumps = np.linalg.norm(selected - previous, axis=1)
         if float(np.max(jumps)) > self.max_point_jump:
             return None
-        filtered = (
-            self.smoothing_alpha * points
-            + (1.0 - self.smoothing_alpha) * self.previous_points
+        history.append(selected.copy())
+        median_points = np.median(
+            np.stack(tuple(history), axis=0), axis=0
         )
-        self.previous_points = filtered
-        return filtered
+        filtered = (
+            self.smoothing_alpha * median_points
+            + (1.0 - self.smoothing_alpha) * previous
+        )
+        self.side_previous_points[side] = filtered
+        output = np.asarray(points, dtype=float).copy()
+        output[indices] = filtered
+        return output
 
-    def bone_lengths_valid(self, points):
-        """Reject implausible limbs and depth association changes."""
-        lengths = self.bone_lengths(points)
+    def side_bone_lengths_valid(self, points, side):
+        """Validate one arm without requiring the opposite arm."""
+        lengths = self.side_bone_lengths(points, side)
         if np.any(lengths < 0.12) or np.any(lengths > 0.60):
             return False
         if self.baseline_bone_lengths is None:
             return True
-        error = np.abs(lengths / self.baseline_bone_lengths - 1.0)
+        start = 0 if side == "left" else 2
+        baseline = self.baseline_bone_lengths[start:start + 2]
+        error = np.abs(lengths / baseline - 1.0)
         return float(np.max(error)) <= self.bone_tolerance
 
     def update_neutral_calibration(self, points, frame_id):
@@ -465,6 +620,7 @@ class DepthArmController(Node):
         self.reference_frame_id = str(frame_id)
         self.corrections = {side: np.eye(3) for side in SIDES}
         self.baseline_bone_lengths = None
+        self.bone_length_samples.clear()
         try:
             self.save_reference()
             saved = f"; saved to {self.calibration_file}"
@@ -475,101 +631,134 @@ class DepthArmController(Node):
         self.get_logger().info(status)
         return False
 
-    def solve_points(self, points):
-        """Solve both arms and apply direction-error and velocity limits."""
-        components = {
-            side: arm_direction_components(points, side) for side in SIDES
-        }
-        if self.reference_origin is None or self.reference_basis is None:
-            self.publish_status(
-                "waiting for natural-standing person-camera calibration"
+    def learn_complete_bone_lengths(self, points):
+        """Persist a robust baseline from several complete RGB-D frames."""
+        if self.baseline_bone_lengths is not None:
+            return
+        lengths = self.bone_lengths(points)
+        self.bone_length_samples.append(lengths)
+        baseline = robust_bone_length_baseline(
+            self.bone_length_samples
+        )
+        if baseline is None:
+            return
+        self.baseline_bone_lengths = baseline
+        self.bone_length_samples.clear()
+        try:
+            self.save_reference()
+        except (OSError, ValueError) as exc:
+            self.get_logger().warning(
+                f"could not update calibrated bone lengths: {exc}"
             )
-            return False
-        if self.baseline_bone_lengths is None:
-            self.baseline_bone_lengths = self.bone_lengths(points)
-            try:
-                self.save_reference()
-            except (OSError, ValueError) as exc:
-                self.get_logger().warning(
-                    f"could not update calibrated bone lengths: {exc}"
-                )
 
-        proposals = {}
-        errors = []
-        seeds = {side: self.solvers[side].previous.copy() for side in SIDES}
-        for side in SIDES:
-            upper, forearm = components[side]
-            correction = self.corrections[side]
-            proposal, error = self.solvers[side].solve(
-                correction @ upper, correction @ forearm
-            )
-            proposals[side] = proposal
-            errors.extend(error.tolist())
-        maximum_error = max(errors)
+    def solve_side(self, points, side):
+        """Solve and update exactly one anatomical arm."""
+        if self.reference_origin is None or self.reference_basis is None:
+            self.publish_side_status(side, "waiting for torso calibration")
+            return False
+        upper, forearm = arm_direction_components(points, side)
+        correction = self.corrections[side]
+        upper = side_mount_components(correction @ upper, side)
+        forearm = side_mount_components(correction @ forearm, side)
+        proposal, errors = self.solvers[side].solve(
+            upper, forearm
+        )
+        maximum_error = float(np.max(errors))
         if maximum_error > self.max_direction_error:
-            for side in SIDES:
-                self.solvers[side].previous = seeds[side]
-            self.publish_status(
-                f"IK rejected: direction error={maximum_error:.1f} deg"
+            # Keep the safe, unpublished solver progress as the next warm
+            # start. Restoring the old seed here made a large valid motion
+            # repeat the same rejected iteration forever.
+            self.set_invalid(
+                f"{side} IK rejected: error={maximum_error:.1f} deg",
+                side,
             )
             return False
 
         now = time.monotonic()
-        dt = 1.0 / 30.0
-        if self.last_solution_time is not None:
-            dt = max(now - self.last_solution_time, 1e-3)
-        self.last_solution_time = now
-        max_delta = self.max_joint_speed * dt
         with self.data_lock:
-            for side in SIDES:
-                previous = self.latest_joints[side]
-                target = previous + np.clip(
-                    proposals[side] - previous, -max_delta, max_delta
-                )
-                self.latest_joints[side] = np.clip(
-                    target, self.joint_limits[:, 0], self.joint_limits[:, 1]
-                )
-                self.solvers[side].previous = self.latest_joints[side].copy()
-            self.last_valid_time = now
-        relative = ""
-        if (
-            self.latest_relative_translation is not None
-            and self.latest_relative_rpy is not None
-        ):
-            x, y, z = self.latest_relative_translation
-            yaw = np.rad2deg(self.latest_relative_rpy[2])
-            relative = (
-                f"; person delta=({x:+.2f},{y:+.2f},{z:+.2f})m"
-                f", yaw={yaw:+.1f} deg"
+            self.target_joints[side] = np.clip(
+                proposal,
+                self.joint_limits[:, 0],
+                self.joint_limits[:, 1],
             )
-        self.publish_status(
-            f"tracking; max direction error={maximum_error:.1f} deg"
-            + relative
+            self.has_joint_solution[side] = True
+            self.latest_valid[side] = True
+            self.last_valid_time[side] = now
+        self.publish_side_status(
+            side, f"tracking; IK error={maximum_error:.1f} deg"
         )
         return True
 
-    def set_invalid(self, status):
-        """Close the hardware-command gate and record a diagnostic status."""
+    def set_invalid(self, status, side=None):
+        """Hold a side briefly, then close only its command gate."""
         now = time.monotonic()
+        targets = SIDES if side is None else (side,)
+        stale_sides = []
         with self.data_lock:
-            self.latest_valid = False
-            stale = (
-                self.last_valid_time is None
-                or now - self.last_valid_time > self.pose_timeout
-            )
-        self.publish_status(status)
+            for target in targets:
+                last_valid = self.last_valid_time[target]
+                stale = (
+                    last_valid is None
+                    or now - last_valid > self.pose_timeout
+                )
+                if stale:
+                    self.latest_valid[target] = False
+                    stale_sides.append(target)
+        for target in targets:
+            self.publish_side_status(target, status)
         self.get_logger().warning(status, throttle_duration_sec=1.0)
-        if stale:
-            self.previous_points = None
-            self.last_solution_time = None
+        for target in stale_sides:
+            self.side_previous_points[target] = None
+            self.side_point_history[target].clear()
+
+    def person_motion_valid(self, translation, rotation):
+        """Apply common calibrated torso motion limits."""
+        if translation is None:
+            return True
+        distance = float(np.linalg.norm(translation))
+        angle = rotation_angle_deg(rotation)
+        if distance > self.max_person_translation:
+            self.set_invalid(
+                "person moved too far from calibration: "
+                f"{distance:.2f} m"
+            )
+            return False
+        if angle > self.max_person_rotation:
+            self.set_invalid(
+                "person rotation exceeds safe tracking range: "
+                f"{angle:.1f} deg"
+            )
+            return False
+        return True
 
     def landmarks_callback(self, message):
-        """Calibrate and track torso pose from shoulder/hip landmarks."""
-        points, error = self.decode_torso_landmarks(message)
-        if error is not None:
+        """Calibrate the torso and update left/right arms independently."""
+        points, confidence, depth_valid, decode_error = (
+            self.decode_landmark_state(message)
+        )
+        if decode_error is not None:
+            self.set_invalid(decode_error)
             if self.reference_origin is None:
-                self.publish_status(error)
+                self.publish_status(decode_error)
             return
+        (
+            points,
+            confidence,
+            depth_valid,
+            torso_cached,
+            torso_error,
+        ) = self.prepare_torso_state(points, confidence, depth_valid)
+        if torso_error is not None:
+            self.set_invalid(torso_error)
+            if self.reference_origin is None:
+                self.publish_status(torso_error)
+            return
+        if torso_cached:
+            self.get_logger().warning(
+                "brief torso dropout; using the latest calibrated torso",
+                throttle_duration_sec=1.0,
+            )
+        torso_points = points
         try:
             if (
                 self.reference_frame_id is not None
@@ -582,90 +771,102 @@ class DepthArmController(Node):
                     f"{old_frame!r} to {message.header.frame_id!r}; "
                     "standing calibration restarted"
                 )
-            self.publish_person_poses(message.header, points)
+            _, _, translation, rotation = self.publish_person_poses(
+                message.header, torso_points
+            )
             if self.reference_origin is None:
                 self.update_neutral_calibration(
-                    points, message.header.frame_id
+                    torso_points, message.header.frame_id
                 )
-        except (ValueError, np.linalg.LinAlgError) as exc:
-            if self.reference_origin is None:
-                self.publish_status(f"person calibration rejected: {exc}")
+                return
+            if not self.person_motion_valid(translation, rotation):
+                return
 
-    def pose_callback(self, message):
-        """Consume one portable RGB-D skeleton."""
-        points, error = self.decode_pose(message)
-        if error is not None:
-            if self.reference_origin is None:
-                with self.data_lock:
-                    self.latest_valid = False
-                return
-            self.set_invalid(error)
-            return
-        try:
-            points = self.filter_points(points)
-            if points is None:
-                self.set_invalid("3-D landmark jump rejected")
-                return
-            if (
-                self.reference_frame_id is not None
-                and self.reference_frame_id != message.header.frame_id
-            ):
-                old_frame = self.reference_frame_id
-                self.reset_calibration()
-                self.get_logger().warning(
-                    "saved person calibration frame changed from "
-                    f"{old_frame!r} to {message.header.frame_id!r}; "
-                    "a new still-standing calibration is required"
+            side_ready = {
+                side: side_landmarks_valid(
+                    points,
+                    confidence,
+                    depth_valid,
+                    side,
+                    self.min_landmark_confidence,
                 )
-            _, _, translation, rotation = self.publish_person_poses(
-                message.header, points
-            )
-            if not self.bone_lengths_valid(points):
-                self.set_invalid("3-D bone lengths rejected")
-                return
-            if translation is not None:
-                distance = float(np.linalg.norm(translation))
-                angle = rotation_angle_deg(rotation)
-                if distance > self.max_person_translation:
+                for side in SIDES
+            }
+            if all(side_ready.values()):
+                self.learn_complete_bone_lengths(points)
+            for side in SIDES:
+                if not side_ready[side]:
                     self.set_invalid(
-                        "person moved too far from calibration: "
-                        f"{distance:.2f} m"
+                        f"{side} landmarks unavailable; holding last pose",
+                        side,
                     )
-                    return
-                if angle > self.max_person_rotation:
+                    continue
+                if not self.side_bone_lengths_valid(points, side):
                     self.set_invalid(
-                        "person rotation exceeds safe tracking range: "
-                        f"{angle:.1f} deg"
+                        f"{side} 3-D bone lengths rejected", side
                     )
-                    return
-            valid = self.solve_points(points)
+                    continue
+                filtered = self.filter_side_points(points, side)
+                if filtered is None:
+                    self.set_invalid(
+                        f"{side} 3-D landmark jump rejected", side
+                    )
+                    continue
+                self.solve_side(filtered, side)
         except (ValueError, np.linalg.LinAlgError) as exc:
             self.set_invalid(f"depth/IK rejected: {exc}")
-            return
-        with self.data_lock:
-            self.latest_valid = valid
 
     def publish_latest(self):
-        """Publish visualization state and gated real-arm commands."""
+        """Publish and gate each arm's visualization and commands."""
         now = time.monotonic()
         with self.data_lock:
-            valid = self.latest_valid
-            fresh = (
-                self.last_valid_time is not None
-                and now - self.last_valid_time <= self.pose_timeout
-            )
-            joints = {
-                side: self.latest_joints[side].copy() for side in SIDES
+            dt = max(now - self.last_publish_filter_time, 1e-3)
+            self.last_publish_filter_time = now
+            for side in SIDES:
+                if not self.has_joint_solution[side]:
+                    continue
+                self.latest_joints[side] = np.clip(
+                    smooth_joint_target(
+                        self.latest_joints[side],
+                        self.target_joints[side],
+                        dt,
+                        self.joint_smoothing_tau,
+                        self.joint_deadband,
+                        self.max_joint_speed,
+                    ),
+                    self.joint_limits[:, 0],
+                    self.joint_limits[:, 1],
+                )
+            states = {
+                side: {
+                    "valid": self.latest_valid[side],
+                    "fresh": (
+                        self.last_valid_time[side] is not None
+                        and now - self.last_valid_time[side]
+                        <= self.pose_timeout
+                    ),
+                    "joints": (
+                        self.latest_joints[side].copy()
+                        if self.has_joint_solution[side]
+                        else self.initial_display_positions.copy()
+                    ),
+                }
+                for side in SIDES
             }
         stamp = self.get_clock().now().to_msg()
         for side in SIDES:
+            state = states[side]
             message = JointState()
             message.header.stamp = stamp
             message.name = self.joint_names
-            message.position = joints[side].tolist()
+            message.position = state["joints"].tolist()
             if self.publish_joint_states_enabled:
                 self.joint_publishers[side].publish(message)
-            if self.command_output_enabled and valid and fresh:
+            if (
+                self.command_output_enabled
+                and state["valid"]
+                and state["fresh"]
+            ):
                 self.command_publishers[side].publish(
                     Float32MultiArray(data=message.position)
                 )
@@ -673,19 +874,27 @@ class DepthArmController(Node):
 
 def main(args=None):
     """Run the robot-specific RGB-D pose consumer."""
-    rclpy.init(args=args)
-    node = DepthArmController()
     try:
+        lock_descriptor = acquire_instance_lock()
+    except RuntimeError as exc:
+        print(f"depth arm controller not started: {exc}", file=sys.stderr)
+        return
+    node = None
+    try:
+        rclpy.init(args=args)
+        node = DepthArmController()
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        try:
-            node.destroy_node()
-        except (KeyboardInterrupt, Exception):
-            pass
+        if node is not None:
+            try:
+                node.destroy_node()
+            except (KeyboardInterrupt, Exception):
+                pass
         if rclpy.ok():
             rclpy.shutdown()
+        os.close(lock_descriptor)
 
 
 if __name__ == "__main__":

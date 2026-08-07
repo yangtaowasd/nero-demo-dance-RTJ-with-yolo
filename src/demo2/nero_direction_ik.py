@@ -4,7 +4,23 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-from demo2.stereo_arm_geometry import unit
+from demo2.arm_geometry import unit
+from demo2.arm_sides import validate_side
+
+
+SIDE_MOUNT_COMPONENT_SIGNS = {
+    "left": np.asarray([1.0, 1.0, -1.0]),
+    "right": np.asarray([1.0, 1.0, 1.0]),
+}
+
+
+def side_mount_components(components, side):
+    """Map person-relative directions into one mirrored Nero mount."""
+    side = validate_side(side)
+    return unit(
+        np.asarray(components, dtype=float)
+        * SIDE_MOUNT_COMPONENT_SIGNS[side]
+    )
 
 
 def rpy_matrix(rpy):
