@@ -160,6 +160,24 @@ def test_legacy_camera_agnostic_reference_is_rejected():
         PersonCameraReference.from_dict(values)
 
 
+def test_single_frame_v3_bone_baseline_is_discarded():
+    """Old first-frame limb lengths are relearned with the robust window."""
+    values = PersonCameraReference(
+        "camera_color_optical_frame",
+        "camera-serial-1",
+        [0.0, 0.0, 1.0],
+        np.eye(3),
+        np.eye(3),
+        np.eye(3),
+        [0.30, 0.30, 0.30, 0.30],
+    ).to_dict()
+    values["version"] = 3
+
+    loaded = PersonCameraReference.from_dict(values)
+
+    assert np.all(np.isnan(loaded.bone_lengths_m))
+
+
 def test_stable_samples_ignore_one_detector_outlier():
     """One false torso estimate does not erase valid natural-pose samples."""
     origin, basis = torso_pose(front_facing_pose())

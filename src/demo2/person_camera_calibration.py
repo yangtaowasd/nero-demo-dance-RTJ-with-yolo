@@ -263,7 +263,7 @@ class PersonCameraReference:
     def to_dict(self):
         """Return a JSON-serializable calibration record."""
         return {
-            "version": 3,
+            "version": 4,
             "frame_id": self.frame_id,
             "camera_id": self.camera_id,
             "origin_camera_m": self.origin_camera_m.tolist(),
@@ -280,7 +280,8 @@ class PersonCameraReference:
     @classmethod
     def from_dict(cls, values):
         """Validate and construct a reference from serialized values."""
-        if int(values.get("version", 0)) != 3:
+        version = int(values.get("version", 0))
+        if version not in (3, 4):
             raise ValueError("unsupported person calibration version")
         return cls(
             str(values["frame_id"]),
@@ -289,7 +290,7 @@ class PersonCameraReference:
             values["basis_camera"],
             values["left_correction"],
             values["right_correction"],
-            values.get("bone_lengths_m"),
+            values.get("bone_lengths_m") if version >= 4 else None,
         )
 
     def save(self, path):
