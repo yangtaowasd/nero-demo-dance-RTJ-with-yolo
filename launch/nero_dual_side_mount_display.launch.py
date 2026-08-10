@@ -5,6 +5,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
+    OpaqueFunction,
     RegisterEventHandler,
     TimerAction,
 )
@@ -14,6 +15,8 @@ from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+
+from demo2.instance_guard import require_instance_available
 
 
 def robot_description():
@@ -85,6 +88,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("start_rviz", default_value="true"),
+        OpaqueFunction(function=require_instance_available),
         pose_guard,
         RegisterEventHandler(
             OnProcessExit(

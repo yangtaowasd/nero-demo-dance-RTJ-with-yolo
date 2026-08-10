@@ -7,6 +7,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
+    OpaqueFunction,
     RegisterEventHandler,
     TimerAction,
 )
@@ -17,6 +18,8 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+
+from demo2.instance_guard import require_instance_available
 
 
 def robot_description():
@@ -94,6 +97,7 @@ def generate_launch_description():
         "pose_timeout_sec": "0.35",
         "publish_joint_states_enabled": "true",
         "command_output_enabled": "false",
+        "exit_if_parent_changes": "true",
         "left_joint_state_topic": "/left/joint_states",
         "right_joint_state_topic": "/right/joint_states",
         "left_command_topic": "/left/neroarm/command_joints",
@@ -160,6 +164,9 @@ def generate_launch_description():
             "publish_joint_states_enabled", bool
         ),
         "command_output_enabled": typed("command_output_enabled", bool),
+        "exit_if_parent_changes": typed(
+            "exit_if_parent_changes", bool
+        ),
         "left_joint_state_topic": LaunchConfiguration(
             "left_joint_state_topic"
         ),
@@ -208,6 +215,7 @@ def generate_launch_description():
             DeclareLaunchArgument(name, default_value=value)
             for name, value in defaults.items()
         ],
+        OpaqueFunction(function=require_instance_available),
         controller,
         RegisterEventHandler(
             OnProcessExit(

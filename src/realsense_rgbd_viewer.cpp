@@ -4,6 +4,7 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp/executors/single_threaded_executor.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
@@ -11,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <csignal>
 #include <cstring>
 #include <memory>
 #include <sstream>
@@ -24,6 +26,12 @@ namespace
 {
 
 constexpr char kWindowName[] = "RealSense RGB | Depth | Fusion (C++)";
+volatile std::sig_atomic_t g_shutdown_requested = 0;
+
+extern "C" void request_shutdown(int)
+{
+  g_shutdown_requested = 1;
+}
 
 std::tuple<int, int, int> parse_profile(const std::string & value)
 {
@@ -440,8 +448,29 @@ private:
 
 int main(int argc, char ** argv)
 {
-  rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<RealsenseRgbdViewer>());
-  rclcpp::shutdown();
+  rclcpp::init(
+    argc, argv, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);
+  std::signal(SIGINT, request_shutdown);
+  std::signal(SIGTERM, request_shutdown);
+  std::shared_ptr<RealsenseRgbdViewer> node;
+  try {
+    node = std::make_shared<RealsenseRgbdViewer>();
+  } catch (const std::exception & error) {
+    if (g_shutdown_requested == 0) {
+      RCLCPP_FATAL(rclcpp::get_logger("realsense_rgbd_viewer_cpp"), "%s", error.what());
+    }
+    rclcpp::shutdown();
+    return g_shutdown_requested == 0 ? 1 : 0;
+  }
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
+  while (rclcpp::ok() && g_shutdown_requested == 0) {
+    executor.spin_some(std::chrono::milliseconds(50));
+  }
+  executor.remove_node(node);
+  node.reset();
+  if (rclcpp::ok()) {
+    rclcpp::shutdown();
+  }
   return 0;
 }

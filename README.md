@@ -143,6 +143,12 @@ landmark confidence, metric depth, and inference FPS. It uses the lightweight
 one person across confidence changes and short occlusions instead of changing
 to whichever person scores highest in each frame.
 
+Each 3-D landmark has an independent constant-velocity Kalman filter. During
+a brief YOLO, keypoint-confidence, or depth dropout, the detector publishes a
+predicted coordinate instead of freezing immediately. The
+`kalman_predicted` channel identifies those coordinates; prediction stops
+after 0.35 seconds by default so stale motion cannot continue indefinitely.
+
 On the current Ryzen 9 target, the C++ camera stays at 30 FPS, C++ inference
 measures about 22–24 FPS, and the complete pose/depth output measures about
 19–22 FPS depending on debug-image publishing. The previous Python RGB-D
@@ -151,7 +157,8 @@ frame with the newest camera frame, so load reduces frame rate rather than
 creating an increasing delay.
 
 Read all per-landmark coordinates, including partial results marked by the
-`depth_valid` channel:
+`depth_valid` channel and short-term predictions marked by
+`kalman_predicted`:
 
 ```bash
 ros2 topic echo /realsense/landmarks_3d
@@ -226,8 +233,10 @@ enable sequence, so a powered but disabled arm reports
 `connected_waiting_for_enable`. Set either firmware argument to `auto` only
 when that controller returns `software_version` while disabled.
 
-For the complete camera pipeline, add `start_hardware:=true`. Real movement
-requires both command gates and an explicit enable service call:
+For the complete camera pipeline, add `start_hardware:=true`. When motion is
+explicitly enabled in the launch command, both v1.11 arms enable automatically
+after connecting. Until a valid visual command arrives, each driver holds its
+current measured pose:
 
 ```bash
 export ROS_LOCALHOST_ONLY=1
@@ -235,18 +244,21 @@ ros2 launch demo2 realsense_depth_arm.launch.py \
   start_hardware:=true \
   command_output_enabled:=true \
   hardware_execute_motion:=true
-
-ros2 service call /left/nero_pyagxarm_driver/enable \
-  std_srvs/srv/SetBool '{data: true}'
-ros2 service call /right/nero_pyagxarm_driver/enable \
-  std_srvs/srv/SetBool '{data: true}'
 ```
 
-Each enable request is rejected until that arm is connected and a fresh,
-validated vision command is available. It also requires a NORMAL arm status
-and positive enable feedback from all seven motors. A 350 ms command timeout holds the
-measured pose; lost joint feedback closes the command gate and triggers the
-pyAgxArm electronic stop. Emergency-stop services are:
+Auto-enable is one-shot and requires positive position/enable feedback from
+all seven motors. For the first 10 seconds after enable, recognition and RViz
+continue updating but the hardware drivers ignore vision motion commands and
+hold the measured pose. It never repeats after a connection failure. Set
+`hardware_auto_enable:=false` to restore manual `~/enable` service control. A
+350 ms command timeout holds the measured pose; lost joint feedback closes the
+command gate and triggers the pyAgxArm electronic stop. Emergency-stop
+services are:
+
+On `Ctrl+C`, both drivers command the fixed joint pose
+`[0, 90, 0, 0, 0, 0, 0]` degrees and wait up to eight seconds for all joints
+to be within 1.5 degrees before disconnecting. A timeout holds the latest
+measured pose instead of continuing an unsupervised return trajectory.
 
 ```bash
 ros2 service call /left/nero_pyagxarm_driver/estop std_srvs/srv/Trigger '{}'

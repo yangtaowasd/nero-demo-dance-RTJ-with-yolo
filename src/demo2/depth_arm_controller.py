@@ -29,7 +29,10 @@ from demo2.arm_sides import (
     TORSO_LANDMARK_INDICES,
     side_landmarks_valid,
 )
-from demo2.dual_joint_state_publisher import acquire_instance_lock
+from demo2.instance_guard import (
+    acquire_instance_lock,
+    parent_process_changed,
+)
 from demo2.nero_direction_ik import (
     DirectionIK,
     NeroKinematics,
@@ -139,6 +142,7 @@ class DepthArmController(Node):
             "initial_display_positions": list(DEFAULT_DISPLAY_JOINTS),
             "publish_joint_states_enabled": True,
             "command_output_enabled": False,
+            "exit_if_parent_changes": False,
             "left_joint_state_topic": DEFAULT_JOINT_STATE_TOPICS["left"],
             "right_joint_state_topic": DEFAULT_JOINT_STATE_TOPICS["right"],
             "left_command_topic": DEFAULT_COMMAND_TOPICS["left"],
@@ -218,6 +222,9 @@ class DepthArmController(Node):
             value("publish_joint_states_enabled")
         )
         self.command_output_enabled = bool(value("command_output_enabled"))
+        self.exit_if_parent_changes = bool(value("exit_if_parent_changes"))
+        self.launch_parent_pid = os.getppid()
+        self.orphan_shutdown_requested = False
 
         kinematics = NeroKinematics(str(value("urdf_file")))
         self.solvers = {
@@ -675,7 +682,7 @@ class DepthArmController(Node):
                 f"could not update calibrated bone lengths: {exc}"
             )
 
-    def solve_side(self, points, side):
+    def solve_side(self, points, side, predicted_count=0):
         """Solve and update exactly one anatomical arm."""
         if self.reference_origin is None or self.reference_basis is None:
             self.publish_side_status(side, "waiting for torso calibration")
@@ -708,8 +715,14 @@ class DepthArmController(Node):
             self.has_joint_solution[side] = True
             self.latest_valid[side] = True
             self.last_valid_time[side] = now
+        prediction = (
+            f"; Kalman predicting {int(predicted_count)} point(s)"
+            if predicted_count
+            else ""
+        )
         self.publish_side_status(
-            side, f"tracking; IK error={maximum_error:.1f} deg"
+            side,
+            f"tracking{prediction}; IK error={maximum_error:.1f} deg",
         )
         return True
 
@@ -765,6 +778,14 @@ class DepthArmController(Node):
             if self.reference_origin is None:
                 self.publish_status(decode_error)
             return
+        predicted = self.channel_values(message, "kalman_predicted")
+        if predicted is None:
+            predicted = np.zeros(8, dtype=bool)
+        elif predicted.shape != (8,):
+            self.set_invalid("invalid Kalman prediction channel")
+            return
+        else:
+            predicted = predicted >= 0.5
         (
             points,
             confidence,
@@ -799,6 +820,14 @@ class DepthArmController(Node):
                 message.header, torso_points
             )
             if self.reference_origin is None:
+                torso_indices = list(TORSO_LANDMARK_INDICES)
+                if np.any(predicted[torso_indices]):
+                    status = (
+                        "waiting for measured torso points before calibration"
+                    )
+                    self.set_invalid(status)
+                    self.publish_status(status)
+                    return
                 self.update_neutral_calibration(
                     torso_points, message.header.frame_id
                 )
@@ -816,7 +845,7 @@ class DepthArmController(Node):
                 )
                 for side in SIDES
             }
-            if all(side_ready.values()):
+            if all(side_ready.values()) and not np.any(predicted):
                 self.learn_complete_bone_lengths(points)
             for side in SIDES:
                 if not side_ready[side]:
@@ -836,12 +865,28 @@ class DepthArmController(Node):
                         f"{side} 3-D landmark jump rejected", side
                     )
                     continue
-                self.solve_side(filtered, side)
+                predicted_count = int(np.count_nonzero(
+                    predicted[list(REQUIRED_LANDMARK_INDICES[side])]
+                ))
+                self.solve_side(filtered, side, predicted_count)
         except (ValueError, np.linalg.LinAlgError) as exc:
             self.set_invalid(f"depth/IK rejected: {exc}")
 
     def publish_latest(self):
         """Publish and gate each arm's visualization and commands."""
+        if (
+            getattr(self, "exit_if_parent_changes", False)
+            and not getattr(self, "orphan_shutdown_requested", False)
+            and parent_process_changed(self.launch_parent_pid)
+        ):
+            self.orphan_shutdown_requested = True
+            self.get_logger().error(
+                "parent launch exited; stopping the controller and "
+                "releasing its instance lock"
+            )
+            if rclpy.ok():
+                rclpy.shutdown()
+            return
         now = time.monotonic()
         with self.data_lock:
             dt = max(now - self.last_publish_filter_time, 1e-3)

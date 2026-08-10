@@ -37,6 +37,11 @@ def generate_launch_description():
         "target_lock_max_center_distance_ratio": "1.25",
         "target_lock_max_missed_frames": "8",
         "keypoint_smoothing_alpha": "0.55",
+        "kalman_tracking_enabled": "true",
+        "kalman_prediction_timeout_sec": "0.35",
+        "kalman_process_noise_mps2": "5.0",
+        "kalman_measurement_noise_m": "0.025",
+        "kalman_max_velocity_mps": "3.0",
         "depth_uint16_scale": "0.001",
         "depth_window_radius": "4",
         "min_valid_depth_pixels": "4",
@@ -69,6 +74,21 @@ def generate_launch_description():
         ),
         "keypoint_smoothing_alpha": typed(
             "keypoint_smoothing_alpha", float
+        ),
+        "kalman_tracking_enabled": typed(
+            "kalman_tracking_enabled", bool
+        ),
+        "kalman_prediction_timeout_sec": typed(
+            "kalman_prediction_timeout_sec", float
+        ),
+        "kalman_process_noise_mps2": typed(
+            "kalman_process_noise_mps2", float
+        ),
+        "kalman_measurement_noise_m": typed(
+            "kalman_measurement_noise_m", float
+        ),
+        "kalman_max_velocity_mps": typed(
+            "kalman_max_velocity_mps", float
         ),
         "depth_uint16_scale": typed("depth_uint16_scale", float),
         "depth_window_radius": typed("depth_window_radius", int),

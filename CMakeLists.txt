@@ -12,7 +12,7 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS calib3d core dnn highgui imgproc)
+find_package(OpenCV REQUIRED COMPONENTS calib3d core dnn highgui imgproc video)
 
 # Use the installed PyTorch runtime's LibTorch package for C++ inference.
 execute_process(

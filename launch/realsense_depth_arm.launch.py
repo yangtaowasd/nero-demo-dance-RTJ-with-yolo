@@ -5,11 +5,14 @@ from launch.actions import (
     DeclareLaunchArgument,
     GroupAction,
     IncludeLaunchDescription,
+    OpaqueFunction,
     SetEnvironmentVariable,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
+
+from demo2.instance_guard import require_instance_available
 
 
 def camera_topic(suffix):
@@ -69,6 +72,11 @@ def generate_launch_description():
         "target_lock_max_center_distance_ratio": "1.25",
         "target_lock_max_missed_frames": "8",
         "keypoint_smoothing_alpha": "0.55",
+        "kalman_tracking_enabled": "true",
+        "kalman_prediction_timeout_sec": "0.35",
+        "kalman_process_noise_mps2": "5.0",
+        "kalman_measurement_noise_m": "0.025",
+        "kalman_max_velocity_mps": "3.0",
         "depth_uint16_scale": "0.001",
         "depth_window_radius": "4",
         "min_valid_depth_pixels": "4",
@@ -113,11 +121,18 @@ def generate_launch_description():
         "start_hardware": "false",
         "left_hardware_enabled": "true",
         "right_hardware_enabled": "true",
-        "left_can_interface": "can0",
-        "right_can_interface": "can1",
+        "left_can_interface": "can1",
+        "right_can_interface": "can0",
         "left_firmware": "v111",
         "right_firmware": "v111",
         "hardware_execute_motion": "false",
+        "hardware_auto_enable": "true",
+        "hardware_require_command_before_enable": "false",
+        "hardware_motion_start_delay_sec": "10.0",
+        "return_to_home_on_shutdown": "true",
+        "shutdown_return_timeout_sec": "8.0",
+        "shutdown_position_tolerance_deg": "1.5",
+        "hardware_shutdown_sigterm_timeout_sec": "12.0",
         "disable_on_shutdown": "false",
         "hardware_rate_hz": "20.0",
         "hardware_command_timeout_sec": "0.35",
@@ -159,6 +174,7 @@ def generate_launch_description():
             DeclareLaunchArgument(name, default_value=value)
             for name, value in defaults.items()
         ],
+        OpaqueFunction(function=require_instance_available),
         package_launch(
             "realsense_camera.launch.py",
             {name: LaunchConfiguration(name) for name in camera_names},

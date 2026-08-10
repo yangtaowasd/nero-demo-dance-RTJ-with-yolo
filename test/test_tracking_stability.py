@@ -1,12 +1,14 @@
 """Tests for controller and RViz output stability."""
 
 from collections import deque
+import os
 import threading
 import time
 from types import SimpleNamespace
 
 from builtin_interfaces.msg import Time
 import numpy as np
+import pytest
 
 from demo2.arm_sides import REQUIRED_LANDMARK_INDICES
 from demo2.depth_arm_controller import (
@@ -18,6 +20,30 @@ from demo2.depth_arm_controller import (
 from demo2.dual_joint_state_publisher import (
     external_joint_source_present,
 )
+from demo2.instance_guard import (
+    acquire_instance_lock,
+    parent_process_changed,
+    require_instance_available,
+)
+
+
+def test_launch_preflight_rejects_an_active_controller(tmp_path):
+    """A duplicate launch stops before camera and CAN nodes are created."""
+    lock_path = str(tmp_path / "controller.lock")
+    descriptor = acquire_instance_lock(lock_path)
+    try:
+        assert str(os.getpid()) in (tmp_path / "controller.lock").read_text()
+        with pytest.raises(RuntimeError, match="already running"):
+            require_instance_available(lock_path=lock_path)
+    finally:
+        os.close(descriptor)
+    assert require_instance_available(lock_path=lock_path) == []
+
+
+def test_parent_change_detects_an_orphaned_ros_node():
+    """Controller and CAN drivers can release resources with dead launch."""
+    assert not parent_process_changed(123, 123)
+    assert parent_process_changed(123, 1)
 
 
 def test_static_pose_yields_to_external_tracking_source():
@@ -119,6 +145,47 @@ def test_rejected_ik_keeps_unpublished_warm_start_progress():
 
     assert not DepthArmController.solve_side(controller, points, "left")
     np.testing.assert_allclose(controller.solvers["left"].previous, 1.0)
+
+
+def test_predicted_landmarks_are_visible_in_side_status():
+    """Operators can distinguish Kalman motion from measured tracking."""
+    class Solver:
+        def solve(self, _upper, _forearm):
+            return np.ones(7), np.asarray([2.0, 1.0])
+
+    statuses = []
+    controller = SimpleNamespace(
+        reference_origin=np.zeros(3),
+        reference_basis=np.eye(3),
+        corrections={"left": np.eye(3)},
+        solvers={"left": Solver()},
+        max_direction_error=25.0,
+        data_lock=threading.Lock(),
+        target_joints={"left": np.zeros(7)},
+        joint_limits=np.asarray([[-3.0, 3.0]] * 7),
+        has_joint_solution={"left": False},
+        latest_valid={"left": False},
+        last_valid_time={"left": None},
+        publish_side_status=lambda side, status: statuses.append(
+            (side, status)
+        ),
+    )
+    points = np.asarray([
+        [-0.2, 0.0, 2.0],
+        [-0.4, 0.1, 2.0],
+        [-0.6, 0.2, 2.0],
+        [-0.15, 0.5, 2.0],
+        [0.2, 0.0, 2.0],
+        [0.4, 0.1, 2.0],
+        [0.6, 0.2, 2.0],
+        [0.15, 0.5, 2.0],
+    ])
+
+    assert DepthArmController.solve_side(
+        controller, points, "left", predicted_count=2
+    )
+    assert statuses[0][0] == "left"
+    assert "Kalman predicting 2 point(s)" in statuses[0][1]
 
 
 def test_left_and_right_command_gates_are_independent():

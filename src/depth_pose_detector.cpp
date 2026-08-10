@@ -7,7 +7,9 @@
 #include <opencv2/dnn.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/video/tracking.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp/executors/single_threaded_executor.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/channel_float32.hpp>
 #include <sensor_msgs/msg/image.hpp>
@@ -19,6 +21,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <csignal>
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -37,6 +40,12 @@ namespace
 {
 
 constexpr std::size_t kLandmarkCount = 8;
+volatile std::sig_atomic_t g_shutdown_requested = 0;
+
+extern "C" void request_shutdown(int)
+{
+  g_shutdown_requested = 1;
+}
 constexpr std::array<int, kLandmarkCount> kYoloLandmarkIds{{5, 7, 9, 11, 6, 8, 10, 12}};
 constexpr std::array<const char *, kLandmarkCount> kLabels{{
   "LS", "LE", "LW", "LH", "RS", "RE", "RW", "RH"}};
@@ -48,6 +57,12 @@ constexpr std::array<int, 6> kRightRequired{{0, 3, 4, 7, 5, 6}};
 double stamp_seconds(const builtin_interfaces::msg::Time & stamp)
 {
   return static_cast<double>(stamp.sec) + static_cast<double>(stamp.nanosec) * 1e-9;
+}
+
+double steady_seconds()
+{
+  return std::chrono::duration<double>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 float median(std::vector<float> values)
@@ -139,6 +154,12 @@ public:
       "target_lock_max_center_distance_ratio", 1.25);
     target_lock_max_missed_ = declare_parameter<int>("target_lock_max_missed_frames", 8);
     keypoint_alpha_ = declare_parameter<double>("keypoint_smoothing_alpha", 0.55);
+    kalman_enabled_ = declare_parameter<bool>("kalman_tracking_enabled", true);
+    kalman_prediction_timeout_ = declare_parameter<double>(
+      "kalman_prediction_timeout_sec", 0.35);
+    kalman_process_noise_ = declare_parameter<double>("kalman_process_noise_mps2", 5.0);
+    kalman_measurement_noise_ = declare_parameter<double>("kalman_measurement_noise_m", 0.025);
+    kalman_max_velocity_ = declare_parameter<double>("kalman_max_velocity_mps", 3.0);
     depth_scale_ = declare_parameter<double>("depth_uint16_scale", 0.001);
     depth_radius_ = declare_parameter<int>("depth_window_radius", 4);
     min_valid_depth_pixels_ = declare_parameter<int>("min_valid_depth_pixels", 4);
@@ -161,6 +182,11 @@ public:
     }
     if (sync_tolerance_ < 0.0 || sync_wait_ < 0.0) {
       throw std::invalid_argument("RGB-D synchronization limits must be non-negative");
+    }
+    if (kalman_prediction_timeout_ < 0.0 || kalman_process_noise_ < 0.0 ||
+      kalman_measurement_noise_ <= 0.0 || kalman_max_velocity_ <= 0.0)
+    {
+      throw std::invalid_argument("Kalman limits/noise values must be positive");
     }
     previous_depths_.fill(std::numeric_limits<float>::quiet_NaN());
     keypoint_alpha_ = std::clamp(keypoint_alpha_, 0.0, 1.0);
@@ -209,8 +235,10 @@ public:
     worker_ = std::thread(&DepthPoseDetectorCpp::processing_loop, this);
     RCLCPP_INFO(
       get_logger(),
-      "C++ RGB-D YOLO ready: model=%s input=%dx%d torch_threads=%d",
-      model_path_.c_str(), inference_size_, inference_size_, std::max(torch_threads_, 1));
+      "C++ RGB-D YOLO ready: model=%s input=%dx%d torch_threads=%d; "
+      "3-D Kalman=%s prediction=%.2fs",
+      model_path_.c_str(), inference_size_, inference_size_, std::max(torch_threads_, 1),
+      kalman_enabled_ ? "on" : "off", kalman_prediction_timeout_);
   }
 
   ~DepthPoseDetectorCpp() override
@@ -242,6 +270,24 @@ private:
     float quality;
     std::array<cv::Point2f, kLandmarkCount> pixels;
     std::array<float, kLandmarkCount> landmark_confidence;
+  };
+
+  struct LandmarkTrack
+  {
+    cv::KalmanFilter filter;
+    bool initialized{false};
+    double last_update_time{0.0};
+    double last_measurement_time{0.0};
+    float last_confidence{0.0F};
+  };
+
+  struct TrackedLandmarks
+  {
+    std::array<cv::Point3f, kLandmarkCount> points;
+    std::array<float, kLandmarkCount> confidence;
+    std::array<bool, kLandmarkCount> predicted;
+    std::size_t predicted_count{0};
+    std::size_t valid_count{0};
   };
 
   void warm_up()
@@ -602,6 +648,188 @@ private:
     return points;
   }
 
+  static cv::Point3f invalid_point()
+  {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    return cv::Point3f(nan, nan, nan);
+  }
+
+  static bool finite_point(const cv::Point3f & point)
+  {
+    return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z);
+  }
+
+  void initialize_landmark_track(
+    LandmarkTrack & track, const cv::Point3f & measurement, float confidence, double now)
+  {
+    track.filter.init(6, 3, 0, CV_32F);
+    track.filter.transitionMatrix = cv::Mat::eye(6, 6, CV_32F);
+    track.filter.measurementMatrix = cv::Mat::zeros(3, 6, CV_32F);
+    for (int axis = 0; axis < 3; ++axis) {
+      track.filter.measurementMatrix.at<float>(axis, axis) = 1.0F;
+    }
+    cv::setIdentity(
+      track.filter.measurementNoiseCov,
+      cv::Scalar(kalman_measurement_noise_ * kalman_measurement_noise_));
+    track.filter.processNoiseCov = cv::Mat::zeros(6, 6, CV_32F);
+    track.filter.errorCovPost = cv::Mat::zeros(6, 6, CV_32F);
+    const float position_variance = static_cast<float>(
+      kalman_measurement_noise_ * kalman_measurement_noise_);
+    for (int axis = 0; axis < 3; ++axis) {
+      track.filter.errorCovPost.at<float>(axis, axis) = position_variance;
+      track.filter.errorCovPost.at<float>(axis + 3, axis + 3) = 1.0F;
+    }
+    track.filter.statePost = cv::Mat::zeros(6, 1, CV_32F);
+    track.filter.statePost.at<float>(0) = measurement.x;
+    track.filter.statePost.at<float>(1) = measurement.y;
+    track.filter.statePost.at<float>(2) = measurement.z;
+    track.filter.statePre = track.filter.statePost.clone();
+    track.filter.errorCovPre = track.filter.errorCovPost.clone();
+    track.initialized = true;
+    track.last_update_time = now;
+    track.last_measurement_time = now;
+    track.last_confidence = confidence;
+  }
+
+  cv::Point3f predict_landmark_track(LandmarkTrack & track, double now)
+  {
+    const double raw_dt = now - track.last_update_time;
+    if (raw_dt <= 1e-6) {
+      return cv::Point3f(
+        track.filter.statePost.at<float>(0),
+        track.filter.statePost.at<float>(1),
+        track.filter.statePost.at<float>(2));
+    }
+    const float dt = static_cast<float>(std::clamp(
+        raw_dt, 1e-3, std::max(kalman_prediction_timeout_, 1e-3)));
+    track.filter.transitionMatrix = cv::Mat::eye(6, 6, CV_32F);
+    for (int axis = 0; axis < 3; ++axis) {
+      track.filter.transitionMatrix.at<float>(axis, axis + 3) = dt;
+    }
+
+    const float acceleration_variance = static_cast<float>(
+      kalman_process_noise_ * kalman_process_noise_);
+    const float dt2 = dt * dt;
+    const float dt3 = dt2 * dt;
+    const float dt4 = dt2 * dt2;
+    track.filter.processNoiseCov = cv::Mat::zeros(6, 6, CV_32F);
+    for (int axis = 0; axis < 3; ++axis) {
+      track.filter.processNoiseCov.at<float>(axis, axis) =
+        0.25F * dt4 * acceleration_variance;
+      track.filter.processNoiseCov.at<float>(axis, axis + 3) =
+        0.5F * dt3 * acceleration_variance;
+      track.filter.processNoiseCov.at<float>(axis + 3, axis) =
+        0.5F * dt3 * acceleration_variance;
+      track.filter.processNoiseCov.at<float>(axis + 3, axis + 3) =
+        dt2 * acceleration_variance;
+    }
+    const cv::Mat prediction = track.filter.predict();
+    track.filter.statePost = track.filter.statePre.clone();
+    track.filter.errorCovPost = track.filter.errorCovPre.clone();
+    track.last_update_time = now;
+    return cv::Point3f(
+      prediction.at<float>(0), prediction.at<float>(1), prediction.at<float>(2));
+  }
+
+  void clamp_landmark_velocity(LandmarkTrack & track)
+  {
+    cv::Vec3f velocity(
+      track.filter.statePost.at<float>(3),
+      track.filter.statePost.at<float>(4),
+      track.filter.statePost.at<float>(5));
+    const float speed = cv::norm(velocity);
+    if (speed <= static_cast<float>(kalman_max_velocity_)) {
+      return;
+    }
+    velocity *= static_cast<float>(kalman_max_velocity_) / std::max(speed, 1e-6F);
+    for (int axis = 0; axis < 3; ++axis) {
+      track.filter.statePost.at<float>(axis + 3) = velocity[axis];
+    }
+  }
+
+  TrackedLandmarks track_landmarks(
+    const std::array<cv::Point3f, kLandmarkCount> & measurements,
+    const std::array<float, kLandmarkCount> & measurement_confidence,
+    double now)
+  {
+    TrackedLandmarks result;
+    result.points.fill(invalid_point());
+    result.confidence.fill(0.0F);
+    result.predicted.fill(false);
+    for (std::size_t index = 0; index < kLandmarkCount; ++index) {
+      const bool measurement_valid = finite_point(measurements[index]) &&
+        std::isfinite(measurement_confidence[index]) &&
+        measurement_confidence[index] >= min_landmark_confidence_;
+      if (!kalman_enabled_) {
+        result.points[index] = measurements[index];
+        result.confidence[index] = measurement_confidence[index];
+        result.valid_count += finite_point(measurements[index]) ? 1U : 0U;
+        continue;
+      }
+
+      auto & track = landmark_tracks_[index];
+      if (measurement_valid) {
+        const bool stale = track.initialized &&
+          now - track.last_measurement_time > kalman_prediction_timeout_;
+        if (!track.initialized || stale) {
+          initialize_landmark_track(
+            track, measurements[index], measurement_confidence[index], now);
+        } else {
+          (void)predict_landmark_track(track, now);
+          cv::Mat measurement(3, 1, CV_32F);
+          measurement.at<float>(0) = measurements[index].x;
+          measurement.at<float>(1) = measurements[index].y;
+          measurement.at<float>(2) = measurements[index].z;
+          track.filter.correct(measurement);
+          clamp_landmark_velocity(track);
+          track.last_measurement_time = now;
+          track.last_confidence = measurement_confidence[index];
+        }
+        result.points[index] = cv::Point3f(
+          track.filter.statePost.at<float>(0),
+          track.filter.statePost.at<float>(1),
+          track.filter.statePost.at<float>(2));
+        result.confidence[index] = measurement_confidence[index];
+        ++result.valid_count;
+        continue;
+      }
+
+      if (!track.initialized) {
+        continue;
+      }
+      const double prediction_age = now - track.last_measurement_time;
+      if (prediction_age < 0.0 || prediction_age > kalman_prediction_timeout_) {
+        track = LandmarkTrack{};
+        continue;
+      }
+      const cv::Point3f prediction = predict_landmark_track(track, now);
+      if (!finite_point(prediction) || prediction.z < min_depth_ || prediction.z > max_depth_) {
+        continue;
+      }
+      const double timeout = std::max(kalman_prediction_timeout_, 1e-6);
+      const float decay = static_cast<float>(std::exp(-0.8 * prediction_age / timeout));
+      result.points[index] = prediction;
+      result.confidence[index] = std::clamp(
+        std::max(
+          static_cast<float>(min_landmark_confidence_ + 0.01),
+          track.last_confidence * decay),
+        0.0F, 1.0F);
+      result.predicted[index] = true;
+      ++result.predicted_count;
+      ++result.valid_count;
+    }
+    return result;
+  }
+
+  TrackedLandmarks predict_landmarks(double now)
+  {
+    std::array<cv::Point3f, kLandmarkCount> measurements;
+    std::array<float, kLandmarkCount> confidence;
+    measurements.fill(invalid_point());
+    confidence.fill(0.0F);
+    return track_landmarks(measurements, confidence, now);
+  }
+
   template<std::size_t Size>
   bool side_ready(
     const std::array<cv::Point3f, kLandmarkCount> & points,
@@ -655,7 +883,8 @@ private:
   sensor_msgs::msg::PointCloud point_cloud(
     const std_msgs::msg::Header & header,
     const std::optional<std::array<cv::Point3f, kLandmarkCount>> & points,
-    const std::optional<std::array<float, kLandmarkCount>> & confidence) const
+    const std::optional<std::array<float, kLandmarkCount>> & confidence,
+    const std::optional<std::array<bool, kLandmarkCount>> & predicted = std::nullopt) const
   {
     sensor_msgs::msg::PointCloud message;
     message.header = header;
@@ -674,20 +903,26 @@ private:
     id_channel.name = "landmark_id";
     sensor_msgs::msg::ChannelFloat32 valid_channel;
     valid_channel.name = "depth_valid";
+    sensor_msgs::msg::ChannelFloat32 predicted_channel;
+    predicted_channel.name = "kalman_predicted";
     for (std::size_t index = 0; index < kLandmarkCount; ++index) {
       confidence_channel.values.push_back((*confidence)[index]);
       id_channel.values.push_back(static_cast<float>(index));
       const auto & point = (*points)[index];
       valid_channel.values.push_back(
         std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) ? 1.0F : 0.0F);
+      predicted_channel.values.push_back(
+        predicted && (*predicted)[index] ? 1.0F : 0.0F);
     }
-    message.channels = {confidence_channel, id_channel, valid_channel};
+    message.channels = {confidence_channel, id_channel, valid_channel, predicted_channel};
     return message;
   }
 
   void annotate(
     cv::Mat & frame, const Detection & detection,
     const std::array<cv::Point3f, kLandmarkCount> & points,
+    const std::array<float, kLandmarkCount> & tracking_confidence,
+    const std::array<bool, kLandmarkCount> & predicted,
     const std::string & status, bool valid) const
   {
     if (tracked_box_) {
@@ -711,16 +946,18 @@ private:
     }
     for (std::size_t index = 0; index < kLandmarkCount; ++index) {
       const bool confident =
-        detection.landmark_confidence[index] >= min_landmark_confidence_;
+        tracking_confidence[index] >= min_landmark_confidence_;
       const bool depth_valid = std::isfinite(points[index].x) &&
         std::isfinite(points[index].y) && std::isfinite(points[index].z);
       const bool accepted = confident && depth_valid;
-      const cv::Scalar color = accepted ? cv::Scalar(70, 230, 100) :
-        (confident ? cv::Scalar(0, 80, 255) : cv::Scalar(0, 200, 255));
+      const cv::Scalar color = predicted[index] ? cv::Scalar(255, 80, 220) :
+        (accepted ? cv::Scalar(70, 230, 100) :
+        (confident ? cv::Scalar(0, 80, 255) : cv::Scalar(0, 200, 255)));
       cv::circle(frame, detection.pixels[index], 5, color, -1);
       std::ostringstream detail;
       detail.precision(2);
-      detail << std::fixed << kLabels[index] << " c=" << detection.landmark_confidence[index];
+      detail << std::fixed << kLabels[index] << (predicted[index] ? " KF" : "") <<
+        " c=" << tracking_confidence[index];
       cv::putText(
         frame, detail.str(), detection.pixels[index] + cv::Point2f(6.0F, -6.0F),
         cv::FONT_HERSHEY_SIMPLEX, 0.38, color, 1, cv::LINE_AA);
@@ -729,7 +966,8 @@ private:
       if (!confident) {
         coordinates << "low confidence";
       } else if (depth_valid) {
-        coordinates << std::fixed << "(" << std::showpos << points[index].x << "," <<
+        coordinates << (predicted[index] ? "pred " : "") << std::fixed <<
+          "(" << std::showpos << points[index].x << "," <<
           points[index].y << "," << std::noshowpos << points[index].z << ")m";
       } else {
         coordinates << "depth missing";
@@ -743,14 +981,18 @@ private:
       valid ? cv::Scalar(70, 230, 100) : cv::Scalar(0, 180, 255), 2, cv::LINE_AA);
   }
 
-  void annotate_tracking_gap(cv::Mat & frame) const
+  void annotate_tracking_gap(cv::Mat & frame, std::size_t predicted_count) const
   {
     if (tracked_box_) {
       cv::rectangle(frame, *tracked_box_, cv::Scalar(0, 180, 255), 2);
     }
     std::ostringstream status;
-    status << "YOLO missed; holding controller " << missed_frames_ << "/" <<
-      target_lock_max_missed_;
+    if (predicted_count > 0) {
+      status << "YOLO missed; Kalman predicting " << predicted_count << "/" <<
+        kLandmarkCount << " points";
+    } else {
+      status << "person lost; controller safety hold";
+    }
     cv::putText(
       frame, status.str(), cv::Point(10, 28), cv::FONT_HERSHEY_SIMPLEX,
       0.55, cv::Scalar(0, 180, 255), 2, cv::LINE_AA);
@@ -779,12 +1021,26 @@ private:
   void process(const FrameBundle & bundle)
   {
     cv::Mat frame = color_mat(*bundle.color);
+    const double tracking_time = steady_seconds();
     last_sync_delta_ms_ = bundle.sync_delta * 1000.0;
     if (bundle.sync_delta > sync_tolerance_) {
       ++sync_drop_count_;
-      landmarks_publisher_->publish(point_cloud(bundle.color->header, std::nullopt, std::nullopt));
+      const auto tracked = predict_landmarks(tracking_time);
+      if (tracked.valid_count > 0) {
+        landmarks_publisher_->publish(
+          point_cloud(
+            bundle.color->header, tracked.points, tracked.confidence, tracked.predicted));
+        ++kalman_prediction_frame_count_;
+        kalman_prediction_point_count_ += tracked.predicted_count;
+      } else {
+        landmarks_publisher_->publish(
+          point_cloud(bundle.color->header, std::nullopt, std::nullopt));
+      }
       std::ostringstream status;
       status << "color/depth mismatch " << std::lround(bundle.sync_delta * 1000.0) << " ms";
+      if (tracked.predicted_count > 0) {
+        status << "; Kalman predicting " << tracked.predicted_count << " points";
+      }
       cv::putText(
         frame, status.str(), cv::Point(10, 28), cv::FONT_HERSHEY_SIMPLEX,
         0.55, cv::Scalar(0, 180, 255), 2, cv::LINE_AA);
@@ -800,33 +1056,46 @@ private:
       0.85 * inference_fps_ + 0.15 * instant_fps;
     if (!detection) {
       ++yolo_miss_count_;
-      landmarks_publisher_->publish(point_cloud(bundle.color->header, std::nullopt, std::nullopt));
-      if (tracked_box_ && missed_frames_ > 0) {
-        annotate_tracking_gap(frame);
+      const auto tracked = predict_landmarks(tracking_time);
+      if (tracked.valid_count > 0) {
+        landmarks_publisher_->publish(
+          point_cloud(
+            bundle.color->header, tracked.points, tracked.confidence, tracked.predicted));
+        ++kalman_prediction_frame_count_;
+        kalman_prediction_point_count_ += tracked.predicted_count;
       } else {
-        cv::putText(
-          frame, "person not detected", cv::Point(10, 28), cv::FONT_HERSHEY_SIMPLEX,
-          0.55, cv::Scalar(0, 180, 255), 2, cv::LINE_AA);
+        landmarks_publisher_->publish(
+          point_cloud(bundle.color->header, std::nullopt, std::nullopt));
       }
+      annotate_tracking_gap(frame, tracked.predicted_count);
       publish_debug_frame(std::move(frame), bundle.color->header);
       return;
     }
-    const auto points = reconstruct(*detection, *bundle.depth, *bundle.info);
-    const bool left = side_ready(points, detection->landmark_confidence, kLeftRequired);
-    const bool right = side_ready(points, detection->landmark_confidence, kRightRequired);
+    const auto measurements = reconstruct(*detection, *bundle.depth, *bundle.info);
+    const auto tracked = track_landmarks(
+      measurements, detection->landmark_confidence, tracking_time);
+    const bool left = side_ready(tracked.points, tracked.confidence, kLeftRequired);
+    const bool right = side_ready(tracked.points, tracked.confidence, kRightRequired);
     landmarks_publisher_->publish(
       point_cloud(
-        bundle.color->header, points, detection->landmark_confidence));
+        bundle.color->header, tracked.points, tracked.confidence, tracked.predicted));
+    if (tracked.predicted_count > 0) {
+      ++kalman_prediction_frame_count_;
+      kalman_prediction_point_count_ += tracked.predicted_count;
+    }
     std::string status;
     if (left && right) {
       ++complete_pose_count_;
-      status = "C++ YOLO RGB-D pose ready";
+      status = tracked.predicted_count > 0 ?
+        "C++ RGB-D pose ready | Kalman predicting " +
+        std::to_string(tracked.predicted_count) + " points" :
+        "C++ YOLO RGB-D pose ready";
     } else {
       ++partial_pose_count_;
       const auto left_missing = missing_required(
-        points, detection->landmark_confidence, kLeftRequired);
+        tracked.points, tracked.confidence, kLeftRequired);
       const auto right_missing = missing_required(
-        points, detection->landmark_confidence, kRightRequired);
+        tracked.points, tracked.confidence, kRightRequired);
       if (left) {
         status = "L ready | R missing: " + right_missing;
       } else if (right) {
@@ -836,7 +1105,9 @@ private:
       }
     }
     if (publish_debug_ || show_gui_) {
-      annotate(frame, *detection, points, status, left && right);
+      annotate(
+        frame, *detection, tracked.points, tracked.confidence, tracked.predicted,
+        status, left && right);
     }
     publish_debug_frame(std::move(frame), bundle.color->header);
   }
@@ -859,12 +1130,15 @@ private:
           RCLCPP_INFO_THROTTLE(
             get_logger(), *get_clock(), 3000,
             "C++ pose rates: inference %.1f FPS, published %.1f FPS, RGB-D dt %.1f ms; "
-            "drops sync=%llu yolo=%llu partial=%llu complete=%llu",
+            "drops sync=%llu yolo=%llu partial=%llu complete=%llu; "
+            "Kalman predicted=%llu points/%llu frames",
             inference_fps_, output_fps_, last_sync_delta_ms_,
             static_cast<unsigned long long>(sync_drop_count_),
             static_cast<unsigned long long>(yolo_miss_count_),
             static_cast<unsigned long long>(partial_pose_count_),
-            static_cast<unsigned long long>(complete_pose_count_));
+            static_cast<unsigned long long>(complete_pose_count_),
+            static_cast<unsigned long long>(kalman_prediction_point_count_),
+            static_cast<unsigned long long>(kalman_prediction_frame_count_));
         }
         last_output_time_ = now;
       } catch (const c10::Error & error) {
@@ -892,6 +1166,11 @@ private:
   double target_lock_max_distance_;
   int target_lock_max_missed_;
   double keypoint_alpha_;
+  bool kalman_enabled_;
+  double kalman_prediction_timeout_;
+  double kalman_process_noise_;
+  double kalman_measurement_noise_;
+  double kalman_max_velocity_;
   double depth_scale_;
   int depth_radius_;
   int min_valid_depth_pixels_;
@@ -917,6 +1196,7 @@ private:
   std::optional<cv::Rect2f> tracked_box_;
   std::optional<std::array<cv::Point2f, kLandmarkCount>> previous_pixels_;
   std::array<float, kLandmarkCount> previous_depths_;
+  std::array<LandmarkTrack, kLandmarkCount> landmark_tracks_;
   int missed_frames_{0};
   std::string tracking_state_{"acquired"};
   double inference_fps_{0.0};
@@ -926,6 +1206,8 @@ private:
   std::uint64_t yolo_miss_count_{0};
   std::uint64_t partial_pose_count_{0};
   std::uint64_t complete_pose_count_{0};
+  std::uint64_t kalman_prediction_point_count_{0};
+  std::uint64_t kalman_prediction_frame_count_{0};
   std::chrono::steady_clock::time_point last_output_time_{};
 
   rclcpp::Publisher<sensor_msgs::msg::PointCloud>::SharedPtr landmarks_publisher_;
@@ -937,14 +1219,29 @@ private:
 
 int main(int argc, char ** argv)
 {
-  rclcpp::init(argc, argv);
+  rclcpp::init(
+    argc, argv, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);
+  std::signal(SIGINT, request_shutdown);
+  std::signal(SIGTERM, request_shutdown);
+  std::shared_ptr<DepthPoseDetectorCpp> node;
   try {
-    rclcpp::spin(std::make_shared<DepthPoseDetectorCpp>());
+    node = std::make_shared<DepthPoseDetectorCpp>();
   } catch (const std::exception & error) {
-    RCLCPP_FATAL(rclcpp::get_logger("depth_pose_detector_cpp"), "%s", error.what());
+    if (g_shutdown_requested == 0) {
+      RCLCPP_FATAL(rclcpp::get_logger("depth_pose_detector_cpp"), "%s", error.what());
+    }
     rclcpp::shutdown();
-    return 1;
+    return g_shutdown_requested == 0 ? 1 : 0;
   }
-  rclcpp::shutdown();
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
+  while (rclcpp::ok() && g_shutdown_requested == 0) {
+    executor.spin_some(std::chrono::milliseconds(50));
+  }
+  executor.remove_node(node);
+  node.reset();
+  if (rclcpp::ok()) {
+    rclcpp::shutdown();
+  }
   return 0;
 }

@@ -18,11 +18,16 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray, String
 from std_srvs.srv import SetBool, Trigger
 
+from demo2.instance_guard import parent_process_changed
+
 from demo2.arm_sides import validate_side
 from demo2.nero_direction_ik import NeroKinematics
 
 
 JOINT_NAMES = tuple(f"joint{index}" for index in range(1, 8))
+DEFAULT_SHUTDOWN_HOME_JOINTS = (
+    0.0, 1.5707963267948966, 0.0, 0.0, 0.0, 0.0, 0.0
+)
 FIRMWARE_NAMES = ("auto", "default", "v111", "v112", "v120")
 ARM_STATUS_NAMES = {
     0x00: "normal",
@@ -159,6 +164,44 @@ def feedback_requires_enable(firmware):
     return str(firmware).strip().lower() in ("default", "v111")
 
 
+def automatic_enable_ready(
+    auto_enable, execute_motion, connected, enabled, estopped, consumed
+):
+    """Return whether the one-shot startup enable may run."""
+    return bool(
+        auto_enable
+        and execute_motion
+        and connected
+        and not enabled
+        and not estopped
+        and not consumed
+    )
+
+
+def joint_target_reached(measured, target, tolerance_rad):
+    """Return whether all joints are within the shutdown tolerance."""
+    measured = np.asarray(measured, dtype=float)
+    target = np.asarray(target, dtype=float)
+    if measured.shape != (7,) or target.shape != (7,):
+        return False
+    if not np.all(np.isfinite(measured)) or not np.all(np.isfinite(target)):
+        return False
+    return bool(
+        np.max(np.abs(measured - target))
+        <= max(float(tolerance_rad), 0.0)
+    )
+
+
+def motion_delay_remaining(enabled_time, now, delay_sec):
+    """Return seconds before physical vision commands may be accepted."""
+    if enabled_time is None:
+        return 0.0
+    return max(
+        float(enabled_time) + max(float(delay_sec), 0.0) - float(now),
+        0.0,
+    )
+
+
 def acquire_can_lock(can_interface):
     """Give one process exclusive command ownership of one CAN interface."""
     safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", str(can_interface))
@@ -189,6 +232,13 @@ class PyAgxArmDriver(Node):
             "feedback_topic": "/left/neroarm/measured_joint_states",
             "status_topic": "/left/neroarm/hardware_status",
             "execute_motion": False,
+            "auto_enable": True,
+            "require_command_before_enable": False,
+            "motion_start_delay_sec": 10.0,
+            "return_to_home_on_shutdown": True,
+            "shutdown_home_positions": list(DEFAULT_SHUTDOWN_HOME_JOINTS),
+            "shutdown_return_timeout_sec": 8.0,
+            "shutdown_position_tolerance_deg": 1.5,
             "disable_on_shutdown": False,
             "feedback_rate_hz": 20.0,
             "command_timeout_sec": 0.35,
@@ -198,6 +248,7 @@ class PyAgxArmDriver(Node):
             "enable_timeout_sec": 5.0,
             "max_command_speed_deg_sec": 30.0,
             "speed_percent": 20,
+            "exit_if_parent_changes": False,
         }
         for name, default in defaults.items():
             self.declare_parameter(name, default)
@@ -213,6 +264,25 @@ class PyAgxArmDriver(Node):
                 f"firmware must be one of {', '.join(FIRMWARE_NAMES)}"
             )
         self.execute_motion = bool(value("execute_motion"))
+        self.auto_enable = bool(value("auto_enable"))
+        self.require_command_before_enable = bool(
+            value("require_command_before_enable")
+        )
+        self.motion_start_delay = max(
+            float(value("motion_start_delay_sec")), 0.0
+        )
+        self.return_to_home_on_shutdown = bool(
+            value("return_to_home_on_shutdown")
+        )
+        self.shutdown_home_positions = np.asarray(
+            value("shutdown_home_positions"), dtype=float
+        )
+        self.shutdown_return_timeout = max(
+            float(value("shutdown_return_timeout_sec")), 0.1
+        )
+        self.shutdown_position_tolerance = np.deg2rad(
+            max(float(value("shutdown_position_tolerance_deg")), 0.1)
+        )
         self.disable_on_shutdown = bool(value("disable_on_shutdown"))
         self.command_timeout = max(
             float(value("command_timeout_sec")), 0.05
@@ -231,10 +301,16 @@ class PyAgxArmDriver(Node):
             max(float(value("max_command_speed_deg_sec")), 0.1)
         )
         self.speed_percent = int(np.clip(int(value("speed_percent")), 1, 100))
+        self.exit_if_parent_changes = bool(value("exit_if_parent_changes"))
+        self.launch_parent_pid = os.getppid()
+        self.orphan_shutdown_requested = False
         rate = max(float(value("feedback_rate_hz")), 1.0)
 
         self.kinematics = NeroKinematics(str(value("urdf_file")))
         self.joint_limits = self.kinematics.limits
+        self.shutdown_home_positions = checked_joint_target(
+            self.shutdown_home_positions, self.joint_limits
+        )
         self.can_lock = acquire_can_lock(self.can_interface)
         self.arm = None
         self.resolved_firmware = None
@@ -252,7 +328,10 @@ class PyAgxArmDriver(Node):
         self.last_feedback_sample_time = None
         self.last_sent_joints = None
         self.last_send_time = None
+        self.motion_enable_time = None
+        self.motion_delay_hold_commanded = False
         self.watchdog_holding = False
+        self.auto_enable_consumed = False
         self.next_connect_time = 0.0
         self.last_status_time = 0.0
         self.last_status_state = None
@@ -275,9 +354,12 @@ class PyAgxArmDriver(Node):
         self.create_service(Trigger, "~/reset", self.reset_callback)
         self.create_timer(1.0 / rate, self.tick)
         self.publish_status("waiting_for_can")
-        motion_state = (
-            "ARMED BY SERVICE" if self.execute_motion else "READ ONLY"
-        )
+        if not self.execute_motion:
+            motion_state = "READ ONLY"
+        elif self.auto_enable:
+            motion_state = "AUTO ENABLE ON CONNECT"
+        else:
+            motion_state = "ARMED BY SERVICE"
         self.get_logger().info(
             f"{self.side} pyAgxArm driver owns {self.can_interface}; "
             f"firmware={self.firmware}; mode={motion_state}"
@@ -387,7 +469,7 @@ class PyAgxArmDriver(Node):
                 self.get_logger().info(
                     f"{self.side} Nero v1.11 transport connected on "
                     f"{self.can_interface}; joint feedback starts only "
-                    "after the explicit enable service"
+                    "after the enable sequence"
                 )
                 self.publish_status("connected_waiting_for_enable")
             else:
@@ -412,17 +494,62 @@ class PyAgxArmDriver(Node):
             )
             self.publish_status("connection_failed", str(exc))
 
+    def return_to_home(self):
+        """Return to [0, 90, 0, 0, 0, 0, 0] and stop on timeout."""
+        if self.arm is None or not self.enabled:
+            return False
+        target = self.shutdown_home_positions.copy()
+        self.get_logger().info(
+            f"{self.side} Ctrl+C: returning to shutdown home pose "
+            "[0, 90, 0, 0, 0, 0, 0] deg"
+        )
+        try:
+            self.arm.set_speed_percent(self.speed_percent)
+            self.arm.move_j(target.tolist())
+            deadline = time.monotonic() + self.shutdown_return_timeout
+            while time.monotonic() < deadline:
+                measured = joint_values(self.arm.get_joint_angles())
+                if measured is not None:
+                    self.measured_joints = measured
+                    if joint_target_reached(
+                        measured,
+                        target,
+                        self.shutdown_position_tolerance,
+                    ):
+                        self.get_logger().info(
+                            f"{self.side} shutdown home pose reached"
+                        )
+                        return True
+                time.sleep(0.02)
+        except Exception as exc:
+            self.get_logger().error(
+                f"{self.side} startup return failed: {exc}"
+            )
+        if self.measured_joints is not None:
+            try:
+                self.arm.move_j(self.measured_joints.tolist())
+            except Exception:
+                pass
+        self.get_logger().error(
+            f"{self.side} shutdown home return timed out; holding latest pose"
+        )
+        return False
+
     def disconnect(self):
-        """Stop any active trajectory, optionally disable, and release CAN."""
+        """Return/hold, optionally disable, and release the CAN transport."""
         arm = self.arm
         if arm is None:
             self.connected = False
             return
         if self.enabled and self.measured_joints is not None:
-            try:
-                arm.move_j(self.measured_joints.tolist())
-            except Exception:
-                pass
+            returned = False
+            if self.return_to_home_on_shutdown:
+                returned = self.return_to_home()
+            if not returned:
+                try:
+                    arm.move_j(self.measured_joints.tolist())
+                except Exception:
+                    pass
         if self.enabled and self.disable_on_shutdown:
             try:
                 arm.disable()
@@ -538,6 +665,28 @@ class PyAgxArmDriver(Node):
         """Send a rate-limited latest command or stop on watchdog expiry."""
         if not self.enabled or self.estopped or self.measured_joints is None:
             return
+        delay_remaining = motion_delay_remaining(
+            self.motion_enable_time, now, self.motion_start_delay
+        )
+        if delay_remaining > 0.0:
+            if not self.motion_delay_hold_commanded:
+                self.arm.move_j(self.measured_joints.tolist())
+                self.last_sent_joints = self.measured_joints.copy()
+                self.last_send_time = now
+                self.motion_delay_hold_commanded = True
+                self.get_logger().info(
+                    f"{self.side} holding current pose for the "
+                    f"{self.motion_start_delay:.1f}s startup motion delay"
+                )
+                self.publish_status("startup_motion_delay")
+            return
+        if self.motion_delay_hold_commanded:
+            self.motion_delay_hold_commanded = False
+            self.get_logger().info(
+                f"{self.side} startup motion delay complete; "
+                "physical vision commands are now accepted"
+            )
+            self.publish_status("motion_enabled")
         fresh = command_is_fresh(
             self.latest_command_time, now, self.command_timeout
         )
@@ -586,6 +735,8 @@ class PyAgxArmDriver(Node):
             else:
                 response.success = True
             self.enabled = False
+            self.motion_enable_time = None
+            self.motion_delay_hold_commanded = False
             response.message = f"{self.side} Nero disabled"
             state = "emergency_stopped" if self.estopped else "disabled"
             self.publish_status(state)
@@ -614,8 +765,11 @@ class PyAgxArmDriver(Node):
             response.success = False
             response.message = "fresh seven-joint hardware feedback is missing"
             return response
-        if not command_is_fresh(
-            self.latest_command_time, now, self.command_timeout
+        if (
+            self.require_command_before_enable
+            and not command_is_fresh(
+                self.latest_command_time, now, self.command_timeout
+            )
         ):
             response.success = False
             response.message = "no fresh validated vision command"
@@ -675,12 +829,48 @@ class PyAgxArmDriver(Node):
         self.enabled = True
         self.estopped = False
         self.last_sent_joints = self.measured_joints.copy()
-        self.last_send_time = time.monotonic()
+        self.motion_enable_time = time.monotonic()
+        self.last_send_time = self.motion_enable_time
+        self.motion_delay_hold_commanded = False
         self.watchdog_holding = False
         response.success = True
-        response.message = f"{self.side} Nero motion enabled"
-        self.publish_status("motion_enabled")
+        response.message = (
+            f"{self.side} Nero enabled; physical commands start after "
+            f"{self.motion_start_delay:.1f}s"
+        )
+        initial_state = (
+            "startup_motion_delay"
+            if self.motion_start_delay > 0.0
+            else "motion_enabled"
+        )
+        self.publish_status(initial_state)
         return response
+
+    def try_automatic_enable(self):
+        """Enable once after startup, then hold until commands are valid."""
+        if not automatic_enable_ready(
+            self.auto_enable,
+            self.execute_motion,
+            self.connected,
+            self.enabled,
+            self.estopped,
+            self.auto_enable_consumed,
+        ):
+            return False
+        self.auto_enable_consumed = True
+        request = SetBool.Request()
+        request.data = True
+        response = self.enable_callback(request, SetBool.Response())
+        if response.success:
+            self.get_logger().info(
+                f"{self.side} Nero startup auto-enable complete"
+            )
+            return True
+        self.get_logger().error(
+            f"{self.side} Nero startup auto-enable failed: "
+            f"{response.message}"
+        )
+        return False
 
     def estop_callback(self, _request, response):
         """Trigger the pyAgxArm damped electronic emergency stop."""
@@ -696,6 +886,8 @@ class PyAgxArmDriver(Node):
             return response
         self.estopped = True
         self.enabled = False
+        self.motion_enable_time = None
+        self.motion_delay_hold_commanded = False
         response.success = True
         response.message = f"{self.side} Nero emergency-stopped"
         self.publish_status("emergency_stopped")
@@ -719,6 +911,8 @@ class PyAgxArmDriver(Node):
             return response
         self.estopped = False
         self.enabled = False
+        self.motion_enable_time = None
+        self.motion_delay_hold_commanded = False
         response.success = True
         response.message = f"{self.side} Nero reset; motion remains disabled"
         self.publish_status("reset_motion_disabled")
@@ -727,6 +921,9 @@ class PyAgxArmDriver(Node):
     def status_payload(self, state, detail=""):
         """Return a machine-readable snapshot of the hardware gate."""
         now = time.monotonic()
+        delay_remaining = motion_delay_remaining(
+            self.motion_enable_time, now, self.motion_start_delay
+        )
         return {
             "side": self.side,
             "can_interface": self.can_interface,
@@ -742,7 +939,10 @@ class PyAgxArmDriver(Node):
             "detail": str(detail),
             "connected": self.connected,
             "execute_motion": self.execute_motion,
+            "auto_enable": self.auto_enable,
+            "auto_enable_consumed": self.auto_enable_consumed,
             "enabled": self.enabled,
+            "motion_delay_remaining_sec": delay_remaining,
             "estopped": self.estopped,
             "command_fresh": command_is_fresh(
                 self.latest_command_time, now, self.command_timeout
@@ -763,11 +963,26 @@ class PyAgxArmDriver(Node):
 
     def tick(self):
         """Reconnect, read feedback, apply watchdogs, and drive one arm."""
+        if (
+            self.exit_if_parent_changes
+            and not self.orphan_shutdown_requested
+            and parent_process_changed(self.launch_parent_pid)
+        ):
+            self.orphan_shutdown_requested = True
+            self.get_logger().error(
+                f"{self.side} parent launch exited; returning safely and "
+                f"releasing {self.can_interface}"
+            )
+            if rclpy.ok():
+                rclpy.shutdown()
+            return
         now = time.monotonic()
         if not self.connected:
             self.try_connect(now)
             return
         try:
+            self.try_automatic_enable()
+            now = time.monotonic()
             feedback_valid = self.read_feedback(now)
             if feedback_valid:
                 self.send_latest_command(now)
@@ -776,6 +991,15 @@ class PyAgxArmDriver(Node):
             if now - self.last_status_time >= 1.0:
                 if self.estopped:
                     state = "emergency_stopped"
+                elif (
+                    self.enabled
+                    and motion_delay_remaining(
+                        self.motion_enable_time,
+                        now,
+                        self.motion_start_delay,
+                    ) > 0.0
+                ):
+                    state = "startup_motion_delay"
                 elif self.enabled and self.watchdog_holding:
                     state = "command_timeout_holding"
                 elif self.enabled:

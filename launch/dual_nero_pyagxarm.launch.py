@@ -32,6 +32,22 @@ def arm_driver(side, can_argument, firmware_argument, condition_argument):
             "feedback_topic": f"{prefix}/measured_joint_states",
             "status_topic": f"{prefix}/hardware_status",
             "execute_motion": typed("hardware_execute_motion", bool),
+            "auto_enable": typed("hardware_auto_enable", bool),
+            "require_command_before_enable": typed(
+                "hardware_require_command_before_enable", bool
+            ),
+            "motion_start_delay_sec": typed(
+                "hardware_motion_start_delay_sec", float
+            ),
+            "return_to_home_on_shutdown": typed(
+                "return_to_home_on_shutdown", bool
+            ),
+            "shutdown_return_timeout_sec": typed(
+                "shutdown_return_timeout_sec", float
+            ),
+            "shutdown_position_tolerance_deg": typed(
+                "shutdown_position_tolerance_deg", float
+            ),
             "disable_on_shutdown": typed("disable_on_shutdown", bool),
             "feedback_rate_hz": typed("hardware_rate_hz", float),
             "command_timeout_sec": typed(
@@ -51,8 +67,14 @@ def arm_driver(side, can_argument, firmware_argument, condition_argument):
                 "hardware_max_command_speed_deg_sec", float
             ),
             "speed_percent": typed("hardware_speed_percent", int),
+            "exit_if_parent_changes": typed(
+                "exit_if_parent_changes", bool
+            ),
         }],
         output="screen",
+        sigterm_timeout=LaunchConfiguration(
+            "hardware_shutdown_sigterm_timeout_sec"
+        ),
     )
 
 
@@ -71,6 +93,13 @@ def generate_launch_description():
             "nero_description.urdf",
         ]),
         "hardware_execute_motion": "false",
+        "hardware_auto_enable": "true",
+        "hardware_require_command_before_enable": "false",
+        "hardware_motion_start_delay_sec": "10.0",
+        "return_to_home_on_shutdown": "true",
+        "shutdown_return_timeout_sec": "8.0",
+        "shutdown_position_tolerance_deg": "1.5",
+        "hardware_shutdown_sigterm_timeout_sec": "12.0",
         "disable_on_shutdown": "false",
         "hardware_rate_hz": "20.0",
         "hardware_command_timeout_sec": "0.35",
@@ -80,6 +109,7 @@ def generate_launch_description():
         "hardware_enable_timeout_sec": "5.0",
         "hardware_max_command_speed_deg_sec": "30.0",
         "hardware_speed_percent": "20",
+        "exit_if_parent_changes": "true",
     }
     return LaunchDescription([
         *[

@@ -95,6 +95,9 @@ published on `/realsense/arm_pose_debug`, while the eight 3-D points are
 published on `/realsense/landmarks_3d`. The diagnostic topic
 `/realsense/landmarks_3d` retains valid individual coordinates when another
 landmark has missing depth; its `depth_valid` channel identifies each one.
+An independent 3-D constant-velocity Kalman filter fills a short YOLO,
+confidence, or depth gap. Predicted points are magenta in the overlay and are
+marked by the `kalman_predicted` channel.
 The overlay also reports the actual RGB-D timestamp difference. Every three
 seconds the detector log reports cumulative `sync`, `yolo`, `partial`, and
 `complete` counts, making synchronization loss distinguishable from YOLO or
@@ -167,10 +170,12 @@ Coordinates are `(X, Y, Z)` metres in the color optical frame: `X` points
 right, `Y` points down, and `Z` points forward from the camera. The
 `confidence` channel contains eight detector scores and `landmark_id`
 contains IDs 0–7 in the order above. `depth_valid` marks each usable metric
-coordinate; an unavailable point contains NaNs so the other arm can continue.
-An empty point cloud means that no person or synchronized RGB-D frame is
-available. A consumer must also enforce a timeout so stale poses never drive
-hardware.
+coordinate. `kalman_predicted` is 1.0 when that coordinate is a short-term
+Kalman prediction rather than a current RGB-D measurement. An unavailable
+point beyond the prediction timeout contains NaNs so the other arm can
+continue. An empty point cloud means that neither a measurement nor a safe
+prediction is available. A consumer must also enforce a timeout so stale
+poses never drive hardware.
 
 ## Controller-only and complete runs
 
@@ -248,11 +253,21 @@ command topic. The defaults are:
 | left | `can0` | `/left/neroarm/command_joints` | `/left/neroarm/measured_joint_states` | `/left/neroarm/hardware_status` |
 | right | `can1` | `/right/neroarm/command_joints` | `/right/neroarm/measured_joint_states` | `/right/neroarm/hardware_status` |
 
-Starting the hardware nodes connects and verifies seven-joint feedback but
-does not enable motors. Motion additionally requires
-`hardware_execute_motion:=true`, `command_output_enabled:=true`, and the
-side-specific `~/enable` service. This prevents a camera or launch restart
-from enabling a real arm automatically.
+Starting with `hardware_execute_motion:=false` remains read-only. When it is
+explicitly set to `true`, the default `hardware_auto_enable:=true` performs a
+one-shot enable on both arms as soon as their transports connect. With no
+fresh visual command, the drivers hold the current measured pose. Set
+`hardware_auto_enable:=false` to use the side-specific `~/enable` services.
+
+The default `hardware_motion_start_delay_sec:=10.0` gates only physical joint
+commands for the first ten seconds after enable. Camera acquisition, YOLO,
+depth fusion, tracking topics, and RViz continue updating during that delay;
+each physical arm holds its measured pose until the gate opens.
+
+The default `return_to_home_on_shutdown:=true` sends both arms to the fixed
+joint pose `[0, 90, 0, 0, 0, 0, 0]` degrees after `Ctrl+C`, with an
+eight-second timeout and 1.5-degree all-joint tolerance. If the return cannot
+be confirmed, each driver holds its latest measured pose before disconnecting.
 
 Firmware defaults to the verified `v111` on both arms. With Nero v1.11 the
 continuous CAN feedback stream starts during the explicit enable/normal-mode
@@ -311,6 +326,12 @@ documented `PointCloud` contract; no Nero source files need to be copied.
   default 0.25 seconds;
 - `target_lock_max_missed_frames`: frames held before selecting a new person;
 - `keypoint_smoothing_alpha`: detector-side 2-D keypoint smoothing;
+- `kalman_tracking_enabled`: enable independent 3-D landmark Kalman filters;
+- `kalman_prediction_timeout_sec`: maximum measurement-loss prediction time,
+  default 0.35 seconds;
+- `kalman_process_noise_mps2`: motion responsiveness/acceleration noise;
+- `kalman_measurement_noise_m`: expected RGB-D measurement noise;
+- `kalman_max_velocity_mps`: maximum velocity retained by a landmark filter;
 - `point_smoothing_alpha`: controller-side 3-D smoothing;
 - `point_median_window`: short 3-D outlier suppression window;
 - `max_point_jump_m`: controller-side discontinuity rejection;

@@ -7,7 +7,9 @@ import numpy as np
 import pytest
 
 from demo2.pyagxarm_driver import (
+    DEFAULT_SHUTDOWN_HOME_JOINTS,
     acquire_can_lock,
+    automatic_enable_ready,
     arm_status_code,
     bounded_joint_step,
     checked_joint_target,
@@ -15,8 +17,10 @@ from demo2.pyagxarm_driver import (
     feedback_requires_enable,
     firmware_name_from_info,
     firmware_name_from_version,
+    joint_target_reached,
     joint_enable_values,
     joint_values,
+    motion_delay_remaining,
 )
 
 
@@ -53,6 +57,33 @@ def test_joint_step_cannot_exceed_configured_hardware_speed():
     np.testing.assert_allclose(stepped, np.deg2rad(1.5))
 
 
+def test_shutdown_return_requires_all_joints_inside_tolerance():
+    """Ctrl+C completion is based on the full seven-joint vector."""
+    target = np.zeros(7)
+    close = np.deg2rad([0.2, -0.4, 0.1, 0.0, 0.3, -0.2, 0.5])
+    far = close.copy()
+    far[5] = np.deg2rad(2.0)
+
+    assert joint_target_reached(close, target, np.deg2rad(1.5))
+    assert not joint_target_reached(far, target, np.deg2rad(1.5))
+    assert not joint_target_reached(np.zeros(6), target, np.deg2rad(1.5))
+
+
+def test_shutdown_home_is_fixed_zero_ninety_pose():
+    """Ctrl+C returns to the requested fixed Nero joint configuration."""
+    expected = np.deg2rad([0.0, 90.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    np.testing.assert_allclose(DEFAULT_SHUTDOWN_HOME_JOINTS, expected)
+
+
+def test_physical_motion_gate_waits_ten_seconds_after_enable():
+    """Vision may update while hardware commands remain gated."""
+    assert motion_delay_remaining(100.0, 100.0, 10.0) == 10.0
+    assert motion_delay_remaining(100.0, 106.5, 10.0) == 3.5
+    assert motion_delay_remaining(100.0, 110.0, 10.0) == 0.0
+    assert motion_delay_remaining(100.0, 120.0, 10.0) == 0.0
+    assert motion_delay_remaining(None, 100.0, 10.0) == 0.0
+
+
 def test_command_watchdog_rejects_missing_and_stale_targets():
     """Motion requires a recently received controller command."""
     assert not command_is_fresh(None, 10.0, 0.35)
@@ -66,6 +97,17 @@ def test_legacy_nero_feedback_starts_only_after_enable():
     assert feedback_requires_enable("v111")
     assert not feedback_requires_enable("v112")
     assert not feedback_requires_enable("v120")
+
+
+def test_startup_auto_enable_is_one_shot_and_explicitly_armed():
+    """Auto-enable requires motion authority and cannot repeat."""
+    assert automatic_enable_ready(True, True, True, False, False, False)
+    assert not automatic_enable_ready(False, True, True, False, False, False)
+    assert not automatic_enable_ready(True, False, True, False, False, False)
+    assert not automatic_enable_ready(True, True, False, False, False, False)
+    assert not automatic_enable_ready(True, True, True, True, False, False)
+    assert not automatic_enable_ready(True, True, True, False, True, False)
+    assert not automatic_enable_ready(True, True, True, False, False, True)
 
 
 def test_one_process_exclusively_owns_each_can_interface():

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Publish a fallback dual-Nero pose for RViz-only visualization."""
 
-import fcntl
 import os
 import sys
 import time
@@ -11,10 +10,11 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
+from demo2.instance_guard import acquire_instance_lock
+
 
 JOINT_NAMES = tuple(f"joint{index}" for index in range(1, 8))
 DEFAULT_POSITIONS = (0.0, 1.5707963, 0.0, 0.0, 0.0, 0.0, 0.0)
-INSTANCE_LOCK = "/tmp/demo2-dual-arm-visualization.lock"
 
 
 def external_joint_source_present(publisher_counts):
@@ -97,19 +97,6 @@ class DualJointStatePublisher(Node):
         stamp = self.get_clock().now().to_msg()
         for publisher in self.joint_publishers:
             publisher.publish(joint_state_message(stamp, self.positions))
-
-
-def acquire_instance_lock():
-    """Prevent two display launches from publishing competing poses."""
-    descriptor = os.open(INSTANCE_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        os.close(descriptor)
-        raise RuntimeError(
-            "another dual-arm display/control pipeline is already running"
-        ) from None
-    return descriptor
 
 
 def main(args=None):
