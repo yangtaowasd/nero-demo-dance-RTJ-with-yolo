@@ -24,7 +24,7 @@ def generate_launch_description():
         "spatial_filter_enabled": "false",
         "temporal_filter_enabled": "true",
         "min_depth_m": "0.15",
-        "max_depth_m": "5.0",
+        "max_depth_m": "8.0",
         "fusion_alpha": "0.45",
         "show_gui": "true",
         "publish_composite": "true",

@@ -254,10 +254,13 @@ does not enable motors. Motion additionally requires
 side-specific `~/enable` service. This prevents a camera or launch restart
 from enabling a real arm automatically.
 
-Firmware defaults to `auto`: each side first queries `get_firmware()` through
-an official `NeroFW.DEFAULT` probe and then reconnects with the matching Nero
-driver. The hardware status includes the requested/resolved firmware,
-controller `arm_status`, and all seven joint enable flags.
+Firmware defaults to the verified `v111` on both arms. With Nero v1.11 the
+continuous CAN feedback stream starts during the explicit enable/normal-mode
+sequence; before that, the hardware status is
+`connected_waiting_for_enable`. `auto` remains available for controllers that
+return `software_version` while disabled. Hardware status includes the
+requested/resolved firmware, controller `arm_status`, and all seven joint
+enable flags.
 
 The hardware boundary independently rejects non-finite, malformed, and
 out-of-URDF-limit commands. Enabling also requires NORMAL controller status
@@ -302,7 +305,7 @@ documented `PointCloud` contract; no Nero source files need to be copied.
   seconds;
 - `depth_window_radius`: depth sampling radius around a landmark;
 - `depth_cluster_tolerance_m`: foreground cluster width;
-- `min_depth_m` / `max_depth_m`: accepted working range, default 0.15–5.0 m;
+- `min_depth_m` / `max_depth_m`: accepted working range, default 0.15–8.0 m;
 - `min_landmark_confidence`: pose keypoint confidence gate;
 - `torso_hold_sec`: calibrated torso hold across a brief shoulder/hip dropout,
   default 0.25 seconds;

@@ -12,6 +12,7 @@ from demo2.pyagxarm_driver import (
     bounded_joint_step,
     checked_joint_target,
     command_is_fresh,
+    feedback_requires_enable,
     firmware_name_from_info,
     firmware_name_from_version,
     joint_enable_values,
@@ -57,6 +58,14 @@ def test_command_watchdog_rejects_missing_and_stale_targets():
     assert not command_is_fresh(None, 10.0, 0.35)
     assert command_is_fresh(9.8, 10.0, 0.35)
     assert not command_is_fresh(9.0, 10.0, 0.35)
+
+
+def test_legacy_nero_feedback_starts_only_after_enable():
+    """Firmware through v1.11 follows the documented CAN-push gate."""
+    assert feedback_requires_enable("default")
+    assert feedback_requires_enable("v111")
+    assert not feedback_requires_enable("v112")
+    assert not feedback_requires_enable("v120")
 
 
 def test_one_process_exclusively_owns_each_can_interface():

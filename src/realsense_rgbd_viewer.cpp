@@ -99,7 +99,7 @@ public:
     show_gui_ = declare_parameter<bool>("show_gui", true);
     publish_composite_ = declare_parameter<bool>("publish_composite", true);
     min_depth_m_ = declare_parameter<double>("min_depth_m", 0.15);
-    max_depth_m_ = declare_parameter<double>("max_depth_m", 5.0);
+    max_depth_m_ = declare_parameter<double>("max_depth_m", 8.0);
     fusion_alpha_ = declare_parameter<double>("fusion_alpha", 0.45);
     output_topic_ = declare_parameter<std::string>("output_topic", "/realsense/rgbd_view");
     if (max_depth_m_ <= min_depth_m_) {

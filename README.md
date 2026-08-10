@@ -129,7 +129,7 @@ The same three-panel image is published on `/realsense/rgbd_view`.
 Camera capture, alignment, colorization, fusion, ROS publishing, and GUI are
 implemented in one C++ process. At 640 x 480 the measured processing rate on
 the target machine is approximately 30 FPS. The default displayed and
-accepted depth range is 0.15–5.0 m.
+accepted depth range is 0.15–8.0 m.
 
 Camera plus YOLO RGB-D recognition, without RViz or robot control:
 
@@ -220,11 +220,11 @@ Connect both arms without enabling their motors or sending movement:
 ros2 launch demo2 dual_nero_pyagxarm.launch.py
 ```
 
-The default `left_firmware:=auto right_firmware:=auto` follows the official
-Nero API sequence: connect a `NeroFW.DEFAULT` probe, call `get_firmware()`,
-disconnect it, then reconnect with the matching `v111`, `v112`, or `v120`
-driver. Override either launch argument only when automatic firmware feedback
-is unavailable and the arm's firmware is already known.
+This dual-arm installation defaults to the verified v1.11 driver on both
+sides. Nero v1.11 starts continuous CAN feedback only after the explicit
+enable sequence, so a powered but disabled arm reports
+`connected_waiting_for_enable`. Set either firmware argument to `auto` only
+when that controller returns `software_version` while disabled.
 
 For the complete camera pipeline, add `start_hardware:=true`. Real movement
 requires both command gates and an explicit enable service call:

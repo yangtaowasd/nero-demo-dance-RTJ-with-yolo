@@ -12,7 +12,8 @@ import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped
-from rclpy.executors import ExternalShutdownException
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState, PointCloud
@@ -129,6 +130,8 @@ class DepthArmController(Node):
             "max_person_translation_m": 1.0,
             "max_person_rotation_deg": 100.0,
             "max_direction_error_deg": 25.0,
+            "ik_max_iterations": 8,
+            "control_rate_hz": 20.0,
             "max_joint_speed_deg_sec": 120.0,
             "joint_smoothing_tau_sec": 0.20,
             "joint_deadband_deg": 0.35,
@@ -192,6 +195,8 @@ class DepthArmController(Node):
             value("max_person_rotation_deg")
         )
         self.max_direction_error = float(value("max_direction_error_deg"))
+        self.ik_max_iterations = max(int(value("ik_max_iterations")), 1)
+        self.control_rate = max(float(value("control_rate_hz")), 1.0)
         self.max_joint_speed = np.deg2rad(
             float(value("max_joint_speed_deg_sec"))
         )
@@ -215,7 +220,12 @@ class DepthArmController(Node):
         self.command_output_enabled = bool(value("command_output_enabled"))
 
         kinematics = NeroKinematics(str(value("urdf_file")))
-        self.solvers = {side: DirectionIK(kinematics) for side in SIDES}
+        self.solvers = {
+            side: DirectionIK(
+                kinematics, max_iterations=self.ik_max_iterations
+            )
+            for side in SIDES
+        }
         self.joint_limits = kinematics.limits
         self.joint_names = [f"joint{index}" for index in range(1, 8)]
 
@@ -251,11 +261,17 @@ class DepthArmController(Node):
         self.last_valid_time = {side: None for side in SIDES}
         self.last_publish_filter_time = time.monotonic()
 
+        # Pose/IK may take most of one camera period during a large motion.
+        # Keep it in a different callback group from the fixed-rate output so
+        # ROS joint states and hardware commands cannot be starved by IK.
+        self.processing_callback_group = MutuallyExclusiveCallbackGroup()
+        self.output_callback_group = MutuallyExclusiveCallbackGroup()
         self.create_subscription(
             PointCloud,
             str(value("landmarks_topic")),
             self.landmarks_callback,
             qos_profile_sensor_data,
+            callback_group=self.processing_callback_group,
         )
         self.joint_publishers = {
             side: self.create_publisher(
@@ -285,9 +301,16 @@ class DepthArmController(Node):
             String, str(value("calibration_status_topic")), 10
         )
         self.create_service(
-            Trigger, "~/recalibrate", self.recalibrate_callback
+            Trigger,
+            "~/recalibrate",
+            self.recalibrate_callback,
+            callback_group=self.processing_callback_group,
         )
-        self.create_timer(0.05, self.publish_latest)
+        self.create_timer(
+            1.0 / self.control_rate,
+            self.publish_latest,
+            callback_group=self.output_callback_group,
+        )
         if self.load_calibration_on_start:
             self.load_reference()
         command_state = (
@@ -297,7 +320,8 @@ class DepthArmController(Node):
             "depth arm controller ready: anatomical left -> "
             f"{value('left_joint_state_topic')}, anatomical right -> "
             f"{value('right_joint_state_topic')}; "
-            f"commands={command_state}"
+            f"commands={command_state}; control={self.control_rate:.1f} Hz; "
+            f"IK iterations/frame={self.ik_max_iterations}"
         )
 
     @staticmethod
@@ -508,12 +532,12 @@ class DepthArmController(Node):
         depth_valid = np.asarray(depth_valid, dtype=bool).copy()
         indices = list(TORSO_LANDMARK_INDICES)
         torso_points = points[indices]
-        if not np.all(np.isfinite(torso_points)):
-            error = "missing shoulder/hip depth"
-        elif not np.all(np.isfinite(confidence[indices])):
+        if not np.all(np.isfinite(confidence[indices])):
             error = "invalid torso confidence"
         elif float(np.min(confidence[indices])) < self.min_torso_confidence:
             error = "low-confidence shoulder/hip landmark"
+        elif not np.all(np.isfinite(torso_points)):
+            error = "missing shoulder/hip depth"
         elif not np.all(depth_valid[indices]):
             error = "invalid shoulder/hip depth"
         else:
@@ -880,13 +904,21 @@ def main(args=None):
         print(f"depth arm controller not started: {exc}", file=sys.stderr)
         return
     node = None
+    executor = None
     try:
         rclpy.init(args=args)
         node = DepthArmController()
-        rclpy.spin(node)
+        executor = MultiThreadedExecutor(num_threads=2)
+        executor.add_node(node)
+        executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        if executor is not None:
+            try:
+                executor.shutdown(timeout_sec=1.0)
+            except (KeyboardInterrupt, Exception):
+                pass
         if node is not None:
             try:
                 node.destroy_node()

@@ -86,6 +86,8 @@ def generate_launch_description():
         "max_person_translation_m": "1.0",
         "max_person_rotation_deg": "100.0",
         "max_direction_error_deg": "25.0",
+        "ik_max_iterations": "8",
+        "control_rate_hz": "20.0",
         "max_joint_speed_deg_sec": "120.0",
         "joint_smoothing_tau_sec": "0.20",
         "joint_deadband_deg": "0.35",
@@ -144,6 +146,8 @@ def generate_launch_description():
             "max_person_rotation_deg", float
         ),
         "max_direction_error_deg": typed("max_direction_error_deg", float),
+        "ik_max_iterations": typed("ik_max_iterations", int),
+        "control_rate_hz": typed("control_rate_hz", float),
         "max_joint_speed_deg_sec": typed(
             "max_joint_speed_deg_sec", float
         ),

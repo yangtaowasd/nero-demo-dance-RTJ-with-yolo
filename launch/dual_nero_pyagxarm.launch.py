@@ -63,8 +63,8 @@ def generate_launch_description():
         "right_hardware_enabled": "true",
         "left_can_interface": "can0",
         "right_can_interface": "can1",
-        "left_firmware": "auto",
-        "right_firmware": "auto",
+        "left_firmware": "v111",
+        "right_firmware": "v111",
         "urdf_file": PathJoinSubstitution([
             FindPackageShare("demo2"),
             "urdf",

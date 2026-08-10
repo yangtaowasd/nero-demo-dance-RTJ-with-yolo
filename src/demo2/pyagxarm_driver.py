@@ -154,6 +154,11 @@ def command_is_fresh(command_time, now, timeout):
     )
 
 
+def feedback_requires_enable(firmware):
+    """Return whether this Nero firmware starts CAN push after enable."""
+    return str(firmware).strip().lower() in ("default", "v111")
+
+
 def acquire_can_lock(can_interface):
     """Give one process exclusive command ownership of one CAN interface."""
     safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", str(can_interface))
@@ -329,7 +334,7 @@ class PyAgxArmDriver(Node):
         return str(error) if error is not None else "unknown CAN error"
 
     def try_connect(self, now):
-        """Connect and require complete feedback without enabling motors."""
+        """Connect without enabling, allowing the documented v1.11 gate."""
         if self.connected or now < self.next_connect_time:
             return
         self.next_connect_time = now + self.reconnect_interval
@@ -350,7 +355,8 @@ class PyAgxArmDriver(Node):
                 if feedback is not None:
                     break
                 time.sleep(0.05)
-            if feedback is None:
+            waits_for_enable = feedback_requires_enable(resolved)
+            if feedback is None and not waits_for_enable:
                 detail = self.communication_error(arm)
                 suffix = f": {detail}" if detail else ""
                 raise RuntimeError(
@@ -359,7 +365,6 @@ class PyAgxArmDriver(Node):
             detail = self.communication_error(arm)
             if detail is not None:
                 raise RuntimeError(f"pyAgxArm communication error: {detail}")
-            arm.set_joint_limits_enabled(True)
             self.arm = arm
             self.resolved_firmware = resolved
             self.firmware_info = info
@@ -370,17 +375,29 @@ class PyAgxArmDriver(Node):
             self.connected = True
             self.measured_joints = feedback
             self.measured_velocity[:] = 0.0
-            self.last_feedback_time = time.monotonic()
+            connected_time = time.monotonic()
+            self.last_feedback_time = (
+                connected_time if feedback is not None else None
+            )
             self.last_feedback_sample_time = self.last_feedback_time
-            self.last_health_time = self.last_feedback_time
+            self.last_health_time = connected_time
             if self.arm_status == 0x01:
                 self.estopped = True
-            self.get_logger().info(
-                f"{self.side} Nero connected read-only on "
-                f"{self.can_interface}; firmware={resolved}; "
-                f"joints={np.round(feedback, 4).tolist()}"
-            )
-            self.publish_status("connected_read_only")
+            if feedback is None:
+                self.get_logger().info(
+                    f"{self.side} Nero v1.11 transport connected on "
+                    f"{self.can_interface}; joint feedback starts only "
+                    "after the explicit enable service"
+                )
+                self.publish_status("connected_waiting_for_enable")
+            else:
+                arm.set_joint_limits_enabled(True)
+                self.get_logger().info(
+                    f"{self.side} Nero connected read-only on "
+                    f"{self.can_interface}; firmware={resolved}; "
+                    f"joints={np.round(feedback, 4).tolist()}"
+                )
+                self.publish_status("connected_read_only")
         except Exception as exc:
             if arm is not None:
                 try:
@@ -587,8 +604,12 @@ class PyAgxArmDriver(Node):
             response.message = "electronic stop is active; call reset first"
             return response
         now = time.monotonic()
-        if not command_is_fresh(
-            self.last_feedback_time, now, self.feedback_timeout
+        waits_for_enable = feedback_requires_enable(self.resolved_firmware)
+        if (
+            not waits_for_enable
+            and not command_is_fresh(
+                self.last_feedback_time, now, self.feedback_timeout
+            )
         ):
             response.success = False
             response.message = "fresh seven-joint hardware feedback is missing"
@@ -599,10 +620,15 @@ class PyAgxArmDriver(Node):
             response.success = False
             response.message = "no fresh validated vision command"
             return response
+        enable_attempted = False
         try:
-            self.require_normal_arm_status()
+            if not waits_for_enable:
+                self.require_normal_arm_status()
             deadline = time.monotonic() + self.enable_timeout
+            enable_attempted = True
             while time.monotonic() < deadline:
+                if waits_for_enable:
+                    self.arm.set_normal_mode()
                 if self.arm.enable():
                     break
                 time.sleep(0.01)
@@ -610,18 +636,38 @@ class PyAgxArmDriver(Node):
                 raise RuntimeError("motor enable timed out")
             self.arm.set_joint_limits_enabled(True)
             self.arm.set_speed_percent(self.speed_percent)
+            measured = None
             while time.monotonic() < deadline:
+                measured = joint_values(self.arm.get_joint_angles())
                 enabled = joint_enable_values(
                     self.arm.get_joints_enable_status_list()
                 )
-                if enabled is not None and all(enabled):
+                if (
+                    measured is not None
+                    and enabled is not None
+                    and all(enabled)
+                ):
                     self.joints_enabled = enabled
                     break
                 time.sleep(0.01)
             else:
-                raise RuntimeError("seven-joint enable feedback timed out")
+                raise RuntimeError(
+                    "seven-joint position/enable feedback timed out"
+                )
+            feedback_time = time.monotonic()
+            self.measured_joints = measured
+            self.measured_velocity[:] = 0.0
+            self.last_feedback_time = feedback_time
+            self.last_feedback_sample_time = feedback_time
             self.require_normal_arm_status()
         except Exception as exc:
+            if enable_attempted:
+                try:
+                    self.arm.electronic_emergency_stop()
+                    self.estopped = True
+                except Exception:
+                    pass
+                self.enabled = False
             response.success = False
             response.message = f"enable failed: {exc}"
             self.publish_status("enable_failed", str(exc))
@@ -629,7 +675,7 @@ class PyAgxArmDriver(Node):
         self.enabled = True
         self.estopped = False
         self.last_sent_joints = self.measured_joints.copy()
-        self.last_send_time = now
+        self.last_send_time = time.monotonic()
         self.watchdog_holding = False
         response.success = True
         response.message = f"{self.side} Nero motion enabled"
@@ -734,6 +780,8 @@ class PyAgxArmDriver(Node):
                     state = "command_timeout_holding"
                 elif self.enabled:
                     state = "motion_enabled"
+                elif self.measured_joints is None:
+                    state = "connected_waiting_for_enable"
                 else:
                     state = "connected_read_only"
                 self.publish_status(state)

@@ -144,7 +144,7 @@ public:
     min_valid_depth_pixels_ = declare_parameter<int>("min_valid_depth_pixels", 4);
     depth_cluster_tolerance_ = declare_parameter<double>("depth_cluster_tolerance_m", 0.08);
     min_depth_ = declare_parameter<double>("min_depth_m", 0.15);
-    max_depth_ = declare_parameter<double>("max_depth_m", 5.0);
+    max_depth_ = declare_parameter<double>("max_depth_m", 8.0);
     sync_tolerance_ = declare_parameter<double>("sync_tolerance_sec", 0.02);
     sync_wait_ = declare_parameter<double>("sync_wait_sec", 0.02);
     publish_debug_ = declare_parameter<bool>("publish_debug_image", true);
@@ -617,6 +617,41 @@ private:
       });
   }
 
+  template<std::size_t Size>
+  std::string missing_required(
+    const std::array<cv::Point3f, kLandmarkCount> & points,
+    const std::array<float, kLandmarkCount> & confidence,
+    const std::array<int, Size> & required) const
+  {
+    std::ostringstream result;
+    bool first = true;
+    for (const int raw_index : required) {
+      const auto index = static_cast<std::size_t>(raw_index);
+      const auto & point = points[index];
+      std::string reason;
+      if (!std::isfinite(confidence[index]) ||
+        confidence[index] < min_landmark_confidence_)
+      {
+        std::ostringstream detail;
+        detail.precision(2);
+        detail << kLabels[index] << "(conf=" << std::fixed << confidence[index] << ")";
+        reason = detail.str();
+      } else if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+        !std::isfinite(point.z))
+      {
+        reason = std::string(kLabels[index]) + "(depth)";
+      }
+      if (!reason.empty()) {
+        if (!first) {
+          result << ",";
+        }
+        result << reason;
+        first = false;
+      }
+    }
+    return result.str();
+  }
+
   sensor_msgs::msg::PointCloud point_cloud(
     const std_msgs::msg::Header & header,
     const std::optional<std::array<cv::Point3f, kLandmarkCount>> & points,
@@ -675,8 +710,13 @@ private:
       }
     }
     for (std::size_t index = 0; index < kLandmarkCount; ++index) {
-      const bool accepted = detection.landmark_confidence[index] >= min_landmark_confidence_;
-      const cv::Scalar color = accepted ? cv::Scalar(70, 230, 100) : cv::Scalar(0, 180, 255);
+      const bool confident =
+        detection.landmark_confidence[index] >= min_landmark_confidence_;
+      const bool depth_valid = std::isfinite(points[index].x) &&
+        std::isfinite(points[index].y) && std::isfinite(points[index].z);
+      const bool accepted = confident && depth_valid;
+      const cv::Scalar color = accepted ? cv::Scalar(70, 230, 100) :
+        (confident ? cv::Scalar(0, 80, 255) : cv::Scalar(0, 200, 255));
       cv::circle(frame, detection.pixels[index], 5, color, -1);
       std::ostringstream detail;
       detail.precision(2);
@@ -686,11 +726,13 @@ private:
         cv::FONT_HERSHEY_SIMPLEX, 0.38, color, 1, cv::LINE_AA);
       std::ostringstream coordinates;
       coordinates.precision(2);
-      if (std::isfinite(points[index].z)) {
+      if (!confident) {
+        coordinates << "low confidence";
+      } else if (depth_valid) {
         coordinates << std::fixed << "(" << std::showpos << points[index].x << "," <<
           points[index].y << "," << std::noshowpos << points[index].z << ")m";
       } else {
-        coordinates << "depth invalid";
+        coordinates << "depth missing";
       }
       cv::putText(
         frame, coordinates.str(), detection.pixels[index] + cv::Point2f(6.0F, 10.0F),
@@ -719,7 +761,7 @@ private:
     if (inference_fps_ > 0.0) {
       std::ostringstream rate;
       rate.precision(1);
-      rate << std::fixed << "C++ YOLO " << inference_fps_ << " FPS | RGB-D " <<
+      rate << std::fixed << "C++ YOLO " << inference_fps_ << " FPS | RGB-D dt " <<
         last_sync_delta_ms_ << " ms";
       cv::putText(
         frame, rate.str(), cv::Point(10, 52), cv::FONT_HERSHEY_SIMPLEX,
@@ -779,12 +821,19 @@ private:
     if (left && right) {
       ++complete_pose_count_;
       status = "C++ YOLO RGB-D pose ready";
-    } else if (left || right) {
-      ++partial_pose_count_;
-      status = std::string("independent arm ready: ") + (left ? "left" : "right");
     } else {
       ++partial_pose_count_;
-      status = "keep shoulders/hips/elbows/wrists visible";
+      const auto left_missing = missing_required(
+        points, detection->landmark_confidence, kLeftRequired);
+      const auto right_missing = missing_required(
+        points, detection->landmark_confidence, kRightRequired);
+      if (left) {
+        status = "L ready | R missing: " + right_missing;
+      } else if (right) {
+        status = "R ready | L missing: " + left_missing;
+      } else {
+        status = "L missing: " + left_missing + " | R missing: " + right_missing;
+      }
     }
     if (publish_debug_ || show_gui_) {
       annotate(frame, *detection, points, status, left && right);
@@ -809,7 +858,7 @@ private:
             0.85 * output_fps_ + 0.15 * instant_output_fps;
           RCLCPP_INFO_THROTTLE(
             get_logger(), *get_clock(), 3000,
-            "C++ pose rates: inference %.1f FPS, published %.1f FPS, RGB-D %.1f ms; "
+            "C++ pose rates: inference %.1f FPS, published %.1f FPS, RGB-D dt %.1f ms; "
             "drops sync=%llu yolo=%llu partial=%llu complete=%llu",
             inference_fps_, output_fps_, last_sync_delta_ms_,
             static_cast<unsigned long long>(sync_drop_count_),

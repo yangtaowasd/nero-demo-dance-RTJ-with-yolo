@@ -160,6 +160,31 @@ def test_expired_torso_cache_is_rejected():
     assert error == "missing shoulder/hip depth"
 
 
+def test_low_confidence_is_reported_before_missing_depth():
+    """A rejected keypoint is not misdiagnosed as a depth-camera hole."""
+    controller = object.__new__(DepthArmController)
+    controller.min_torso_confidence = 0.45
+    controller.torso_hold_sec = 0.25
+    controller.reference_origin = None
+    controller.cached_torso_points = None
+    controller.cached_torso_confidence = None
+    controller.cached_torso_time = None
+    points = np.ones((8, 3), dtype=float)
+    points[3] = np.nan
+    confidence = np.full(8, 0.9)
+    confidence[3] = 0.02
+    depth_valid = np.ones(8, dtype=bool)
+    depth_valid[3] = False
+
+    prepared, _, _, cached, error = controller.prepare_torso_state(
+        points, confidence, depth_valid, now=1.0
+    )
+
+    assert prepared is None
+    assert not cached
+    assert error == "low-confidence shoulder/hip landmark"
+
+
 def test_anatomical_sides_use_matching_topics():
     """Human left/right landmarks map to the same ROS namespace."""
     assert ARM_LANDMARK_INDICES == {

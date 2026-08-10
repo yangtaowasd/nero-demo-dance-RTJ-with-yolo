@@ -69,7 +69,7 @@ def generate_launch_description():
         "min_valid_depth_pixels": "4",
         "depth_cluster_tolerance_m": "0.08",
         "min_depth_m": "0.15",
-        "max_depth_m": "5.0",
+        "max_depth_m": "8.0",
         "sync_tolerance_sec": "0.02",
         "sync_wait_sec": "0.02",
         "landmarks_topic": "/realsense/landmarks_3d",
