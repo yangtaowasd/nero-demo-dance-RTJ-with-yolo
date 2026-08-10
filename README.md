@@ -185,6 +185,29 @@ of an all-zero pose. A short recognition/depth dropout holds the last valid
 joint result. Pixel landmarks, 3-D points, and joint angles are filtered at
 separate stages to reduce visible jitter.
 
+### Adaptive low-latency filtering
+
+The controller does not apply the strongest filter to every frame. It keeps
+the original noise suppression while the person is still, then automatically
+switches to a faster response during deliberate motion:
+
+- stationary 3-D landmarks keep the three-frame median and slow
+  `point_smoothing_alpha` of 0.30;
+- landmark motion starts accelerating at 0.015 m and reaches the fast
+  `point_fast_smoothing_alpha` of 0.85 at 0.060 m; at that point the newest
+  already Kalman-filtered point bypasses the causal median delay;
+- small joint changes keep `joint_smoothing_tau_sec` at 0.20 seconds and the
+  0.35-degree deadband;
+- joint motion starts accelerating at 1 degree and reaches
+  `joint_fast_smoothing_tau_sec` of 0.04 seconds at 8 degrees.
+
+For a sufficiently large valid movement, the joint filter's approximate 95%
+settling time therefore falls from 0.60 seconds to 0.12 seconds. Confidence,
+depth, jump, bone-length, IK, timeout, and joint-speed safety gates are not
+relaxed. The separate hardware driver still limits physical motion to 30
+degrees per second by default, so adaptive filtering reduces computation and
+tracking lag without silently increasing the real-arm speed.
+
 For a static model-only check, use:
 
 ```bash
@@ -207,7 +230,7 @@ RViz motion are stable. The included pyAgxArm bridge consumes the configured
 ## Dual Nero hardware through pyAgxArm
 
 The package includes two isolated SocketCAN drivers. By default anatomical
-left owns `can0`, anatomical right owns `can1`, and both drivers are read-only.
+left owns `can1`, anatomical right owns `can0`, and both drivers are read-only.
 They publish measured feedback on
 `/left/neroarm/measured_joint_states` and
 `/right/neroarm/measured_joint_states`.
@@ -243,7 +266,9 @@ export ROS_LOCALHOST_ONLY=1
 ros2 launch demo2 realsense_depth_arm.launch.py \
   start_hardware:=true \
   command_output_enabled:=true \
-  hardware_execute_motion:=true
+  hardware_execute_motion:=true \
+  left_can_interface:=can1 \
+  right_can_interface:=can0
 ```
 
 Auto-enable is one-shot and requires positive position/enable feedback from

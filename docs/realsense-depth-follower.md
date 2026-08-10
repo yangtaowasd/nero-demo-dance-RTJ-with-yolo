@@ -32,7 +32,10 @@ a higher score. A short miss keeps the last tracked box visible while the
 controller safely holds its last joints; stale pixels are never presented as a
 new control measurement. A keypoint EMA, foreground-biased depth clustering,
 a short 3-D median plus EMA, and joint deadband/low-pass filtering reduce
-detector, depth, and RViz jitter at their respective stages.
+detector, depth, and RViz jitter at their respective stages. The controller
+uses those latter two filters adaptively: stationary data keeps strong noise
+suppression, while deliberate motion progressively uses the newest Kalman
+point and a shorter joint time constant to avoid adding fixed latency.
 
 RealSense provides its factory-calibrated color/depth intrinsics through
 `CameraInfo`. Runtime calibration therefore needs no board, tag, IMU, or
@@ -250,8 +253,8 @@ command topic. The defaults are:
 
 | Side | CAN | Command | Measured feedback | Hardware status |
 |---|---|---|---|---|
-| left | `can0` | `/left/neroarm/command_joints` | `/left/neroarm/measured_joint_states` | `/left/neroarm/hardware_status` |
-| right | `can1` | `/right/neroarm/command_joints` | `/right/neroarm/measured_joint_states` | `/right/neroarm/hardware_status` |
+| left | `can1` | `/left/neroarm/command_joints` | `/left/neroarm/measured_joint_states` | `/left/neroarm/hardware_status` |
+| right | `can0` | `/right/neroarm/command_joints` | `/right/neroarm/measured_joint_states` | `/right/neroarm/hardware_status` |
 
 Starting with `hardware_execute_motion:=false` remains read-only. When it is
 explicitly set to `true`, the default `hardware_auto_enable:=true` performs a
@@ -334,8 +337,21 @@ documented `PointCloud` contract; no Nero source files need to be copied.
 - `kalman_max_velocity_mps`: maximum velocity retained by a landmark filter;
 - `point_smoothing_alpha`: controller-side 3-D smoothing;
 - `point_median_window`: short 3-D outlier suppression window;
+- `adaptive_point_filter_enabled`: keep median/slow smoothing at rest and
+  progressively use the latest Kalman point during motion, default true;
+- `point_fast_smoothing_alpha`: moving-landmark EMA weight, default 0.85;
+- `point_motion_start_m` / `point_motion_full_m`: displacement range over
+  which 3-D filtering changes from stationary to fast mode, default
+  0.015–0.060 m;
 - `max_point_jump_m`: controller-side discontinuity rejection;
 - `joint_smoothing_tau_sec`: joint low-pass time constant;
+- `adaptive_joint_smoothing_enabled`: reduce the joint time constant only for
+  deliberate motion, default true;
+- `joint_fast_smoothing_tau_sec`: moving-joint time constant, default 0.04
+  seconds;
+- `joint_motion_start_deg` / `joint_motion_full_deg`: joint error range over
+  which the time constant changes from 0.20 to 0.04 seconds, default 1–8
+  degrees;
 - `joint_deadband_deg`: joint changes smaller than this are held;
 - `neutral_calibration_sec`: natural-standing calibration duration;
 - `calibration_max_consecutive_outliers`: consecutive unstable torso frames

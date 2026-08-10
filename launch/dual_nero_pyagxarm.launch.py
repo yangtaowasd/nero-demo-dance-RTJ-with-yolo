@@ -83,8 +83,8 @@ def generate_launch_description():
     defaults = {
         "left_hardware_enabled": "true",
         "right_hardware_enabled": "true",
-        "left_can_interface": "can0",
-        "right_can_interface": "can1",
+        "left_can_interface": "can1",
+        "right_can_interface": "can0",
         "left_firmware": "v111",
         "right_firmware": "v111",
         "urdf_file": PathJoinSubstitution([
