@@ -81,6 +81,42 @@ def test_joint_filter_applies_deadband_and_time_smoothing():
     assert np.all(np.abs(moved) < np.abs(proposal))
 
 
+def test_joint_filter_reacts_faster_only_for_deliberate_motion():
+    """Adaptive smoothing keeps the deadband but reduces motion lag."""
+    previous = np.zeros(2)
+    proposal = np.deg2rad([10.0, -10.0])
+    arguments = (
+        previous,
+        proposal,
+        0.05,
+        0.20,
+        np.deg2rad(0.35),
+        np.deg2rad(120.0),
+    )
+
+    fixed = smooth_joint_target(*arguments)
+    adaptive = smooth_joint_target(
+        *arguments,
+        fast_smoothing_tau=0.04,
+        adaptive_motion_start_rad=np.deg2rad(1.0),
+        adaptive_motion_full_rad=np.deg2rad(8.0),
+    )
+    tiny = smooth_joint_target(
+        previous,
+        np.deg2rad([0.1, -0.1]),
+        0.05,
+        0.20,
+        np.deg2rad(0.35),
+        np.deg2rad(120.0),
+        fast_smoothing_tau=0.04,
+        adaptive_motion_start_rad=np.deg2rad(1.0),
+        adaptive_motion_full_rad=np.deg2rad(8.0),
+    )
+
+    assert np.all(np.abs(adaptive) > np.abs(fixed))
+    np.testing.assert_allclose(tiny, 0.0)
+
+
 def test_point_filter_uses_a_short_median_before_ema():
     """Each arm attenuates noise without sharing filter state."""
     controller = object.__new__(DepthArmController)
@@ -90,6 +126,10 @@ def test_point_filter_uses_a_short_median_before_ema():
     }
     controller.max_point_jump = 1.0
     controller.smoothing_alpha = 0.5
+    controller.adaptive_point_filter_enabled = False
+    controller.point_fast_smoothing_alpha = 0.85
+    controller.point_motion_start = 0.015
+    controller.point_motion_full = 0.060
     zeros = np.zeros((8, 3), dtype=float)
     noisy = np.full((8, 3), 0.2, dtype=float)
 
@@ -99,6 +139,29 @@ def test_point_filter_uses_a_short_median_before_ema():
     left_indices = list(REQUIRED_LANDMARK_INDICES["left"])
     np.testing.assert_allclose(filtered[left_indices], 0.05)
     assert controller.side_previous_points["right"] is None
+
+
+def test_point_filter_bypasses_median_lag_during_real_motion():
+    """Fast movement uses the newest Kalman point; static filtering remains."""
+    controller = object.__new__(DepthArmController)
+    controller.side_previous_points = {"left": None, "right": None}
+    controller.side_point_history = {
+        side: deque(maxlen=3) for side in ("left", "right")
+    }
+    controller.max_point_jump = 1.0
+    controller.smoothing_alpha = 0.30
+    controller.adaptive_point_filter_enabled = True
+    controller.point_fast_smoothing_alpha = 0.85
+    controller.point_motion_start = 0.015
+    controller.point_motion_full = 0.060
+    zeros = np.zeros((8, 3), dtype=float)
+    moved = np.full((8, 3), 0.10, dtype=float)
+
+    controller.filter_side_points(zeros, "left")
+    filtered = controller.filter_side_points(moved, "left")
+
+    left_indices = list(REQUIRED_LANDMARK_INDICES["left"])
+    assert np.all(filtered[left_indices] > 0.08)
 
 
 def test_bone_baseline_waits_for_multiple_frames_and_uses_median():
@@ -216,6 +279,10 @@ def test_left_and_right_command_gates_are_independent():
     controller.has_joint_solution = {"left": True, "right": True}
     controller.last_publish_filter_time = time.monotonic() - 0.05
     controller.joint_smoothing_tau = 0.2
+    controller.adaptive_joint_smoothing_enabled = True
+    controller.joint_fast_smoothing_tau = 0.04
+    controller.joint_motion_start = np.deg2rad(1.0)
+    controller.joint_motion_full = np.deg2rad(8.0)
     controller.joint_deadband = np.deg2rad(0.35)
     controller.max_joint_speed = np.deg2rad(120.0)
     controller.joint_limits = np.asarray([[-3.0, 3.0]] * 7)

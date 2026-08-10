@@ -74,6 +74,10 @@ def generate_launch_description():
         "torso_hold_sec": "0.25",
         "point_smoothing_alpha": "0.30",
         "point_median_window": "3",
+        "adaptive_point_filter_enabled": "true",
+        "point_fast_smoothing_alpha": "0.85",
+        "point_motion_start_m": "0.015",
+        "point_motion_full_m": "0.060",
         "max_point_jump_m": "0.25",
         "bone_length_tolerance_ratio": "0.30",
         "neutral_calibration_sec": "3.0",
@@ -93,6 +97,10 @@ def generate_launch_description():
         "control_rate_hz": "20.0",
         "max_joint_speed_deg_sec": "120.0",
         "joint_smoothing_tau_sec": "0.20",
+        "adaptive_joint_smoothing_enabled": "true",
+        "joint_fast_smoothing_tau_sec": "0.04",
+        "joint_motion_start_deg": "1.0",
+        "joint_motion_full_deg": "8.0",
         "joint_deadband_deg": "0.35",
         "pose_timeout_sec": "0.35",
         "publish_joint_states_enabled": "true",
@@ -119,6 +127,14 @@ def generate_launch_description():
         "torso_hold_sec": typed("torso_hold_sec", float),
         "point_smoothing_alpha": typed("point_smoothing_alpha", float),
         "point_median_window": typed("point_median_window", int),
+        "adaptive_point_filter_enabled": typed(
+            "adaptive_point_filter_enabled", bool
+        ),
+        "point_fast_smoothing_alpha": typed(
+            "point_fast_smoothing_alpha", float
+        ),
+        "point_motion_start_m": typed("point_motion_start_m", float),
+        "point_motion_full_m": typed("point_motion_full_m", float),
         "max_point_jump_m": typed("max_point_jump_m", float),
         "bone_length_tolerance_ratio": typed(
             "bone_length_tolerance_ratio", float
@@ -158,6 +174,14 @@ def generate_launch_description():
         "joint_smoothing_tau_sec": typed(
             "joint_smoothing_tau_sec", float
         ),
+        "adaptive_joint_smoothing_enabled": typed(
+            "adaptive_joint_smoothing_enabled", bool
+        ),
+        "joint_fast_smoothing_tau_sec": typed(
+            "joint_fast_smoothing_tau_sec", float
+        ),
+        "joint_motion_start_deg": typed("joint_motion_start_deg", float),
+        "joint_motion_full_deg": typed("joint_motion_full_deg", float),
         "joint_deadband_deg": typed("joint_deadband_deg", float),
         "pose_timeout_sec": typed("pose_timeout_sec", float),
         "publish_joint_states_enabled": typed(

@@ -63,14 +63,33 @@ def smooth_joint_target(
     smoothing_tau,
     deadband_rad,
     max_speed_rad_sec,
+    fast_smoothing_tau=None,
+    adaptive_motion_start_rad=0.0,
+    adaptive_motion_full_rad=0.0,
 ):
-    """Apply joint deadband, time-based smoothing, and a speed limit."""
+    """Apply adaptive time smoothing, a deadband, and a speed limit."""
     previous = np.asarray(previous, dtype=float)
     proposal = np.asarray(proposal, dtype=float)
     dt = max(float(dt), 1e-3)
     delta = proposal - previous
     delta[np.abs(delta) < max(float(deadband_rad), 0.0)] = 0.0
     smoothing_tau = max(float(smoothing_tau), 0.0)
+    if fast_smoothing_tau is not None and delta.size:
+        motion_start = max(float(adaptive_motion_start_rad), 0.0)
+        motion_full = max(float(adaptive_motion_full_rad), motion_start + 1e-9)
+        motion = float(np.max(np.abs(delta)))
+        motion_ratio = float(np.clip(
+            (motion - motion_start) / (motion_full - motion_start),
+            0.0,
+            1.0,
+        ))
+        fast_tau = np.clip(
+            float(fast_smoothing_tau), 0.0, smoothing_tau
+        )
+        smoothing_tau = (
+            (1.0 - motion_ratio) * smoothing_tau
+            + motion_ratio * fast_tau
+        )
     alpha = 1.0
     if smoothing_tau > 1e-6:
         alpha = 1.0 - np.exp(-dt / smoothing_tau)
@@ -118,6 +137,10 @@ class DepthArmController(Node):
             "torso_hold_sec": 0.25,
             "point_smoothing_alpha": 0.30,
             "point_median_window": 3,
+            "adaptive_point_filter_enabled": True,
+            "point_fast_smoothing_alpha": 0.85,
+            "point_motion_start_m": 0.015,
+            "point_motion_full_m": 0.060,
             "max_point_jump_m": 0.25,
             "bone_length_tolerance_ratio": 0.30,
             "neutral_calibration_sec": 3.0,
@@ -137,6 +160,10 @@ class DepthArmController(Node):
             "control_rate_hz": 20.0,
             "max_joint_speed_deg_sec": 120.0,
             "joint_smoothing_tau_sec": 0.20,
+            "adaptive_joint_smoothing_enabled": True,
+            "joint_fast_smoothing_tau_sec": 0.04,
+            "joint_motion_start_deg": 1.0,
+            "joint_motion_full_deg": 8.0,
             "joint_deadband_deg": 0.35,
             "pose_timeout_sec": 0.35,
             "initial_display_positions": list(DEFAULT_DISPLAY_JOINTS),
@@ -169,6 +196,22 @@ class DepthArmController(Node):
         )
         self.point_median_window = max(
             int(value("point_median_window")), 1
+        )
+        self.adaptive_point_filter_enabled = bool(
+            value("adaptive_point_filter_enabled")
+        )
+        self.point_fast_smoothing_alpha = max(
+            self.smoothing_alpha,
+            float(np.clip(
+                float(value("point_fast_smoothing_alpha")), 0.0, 1.0
+            )),
+        )
+        self.point_motion_start = max(
+            float(value("point_motion_start_m")), 0.0
+        )
+        self.point_motion_full = max(
+            float(value("point_motion_full_m")),
+            self.point_motion_start + 1e-9,
         )
         self.max_point_jump = float(value("max_point_jump_m"))
         self.bone_tolerance = float(value("bone_length_tolerance_ratio"))
@@ -207,6 +250,20 @@ class DepthArmController(Node):
         self.joint_smoothing_tau = float(
             value("joint_smoothing_tau_sec")
         )
+        self.adaptive_joint_smoothing_enabled = bool(
+            value("adaptive_joint_smoothing_enabled")
+        )
+        self.joint_fast_smoothing_tau = min(
+            max(float(value("joint_fast_smoothing_tau_sec")), 0.0),
+            max(self.joint_smoothing_tau, 0.0),
+        )
+        self.joint_motion_start = np.deg2rad(max(
+            float(value("joint_motion_start_deg")), 0.0
+        ))
+        self.joint_motion_full = np.deg2rad(max(
+            float(value("joint_motion_full_deg")),
+            float(value("joint_motion_start_deg")) + 1e-6,
+        ))
         self.joint_deadband = np.deg2rad(
             float(value("joint_deadband_deg"))
         )
@@ -587,9 +644,29 @@ class DepthArmController(Node):
         median_points = np.median(
             np.stack(tuple(history), axis=0), axis=0
         )
+        motion_ratio = 0.0
+        if self.adaptive_point_filter_enabled:
+            motion = float(np.max(jumps))
+            motion_ratio = float(np.clip(
+                (motion - self.point_motion_start)
+                / (self.point_motion_full - self.point_motion_start),
+                0.0,
+                1.0,
+            ))
+        # Median/slow EMA suppress stationary depth noise. During deliberate
+        # motion, trust the already Kalman-filtered newest sample to avoid the
+        # causal three-frame median's one-frame delay.
+        filter_input = (
+            (1.0 - motion_ratio) * median_points
+            + motion_ratio * selected
+        )
+        smoothing_alpha = (
+            (1.0 - motion_ratio) * self.smoothing_alpha
+            + motion_ratio * self.point_fast_smoothing_alpha
+        )
         filtered = (
-            self.smoothing_alpha * median_points
-            + (1.0 - self.smoothing_alpha) * previous
+            smoothing_alpha * filter_input
+            + (1.0 - smoothing_alpha) * previous
         )
         self.side_previous_points[side] = filtered
         output = np.asarray(points, dtype=float).copy()
@@ -902,6 +979,13 @@ class DepthArmController(Node):
                         self.joint_smoothing_tau,
                         self.joint_deadband,
                         self.max_joint_speed,
+                        fast_smoothing_tau=(
+                            self.joint_fast_smoothing_tau
+                            if self.adaptive_joint_smoothing_enabled
+                            else None
+                        ),
+                        adaptive_motion_start_rad=self.joint_motion_start,
+                        adaptive_motion_full_rad=self.joint_motion_full,
                     ),
                     self.joint_limits[:, 0],
                     self.joint_limits[:, 1],
