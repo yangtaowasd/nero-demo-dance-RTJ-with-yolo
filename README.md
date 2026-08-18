@@ -73,6 +73,12 @@ dual-arm display launch. Both entry points share a singleton guard, so an
 accidental second pipeline exits before publishing duplicate TF or joint-state
 data.
 
+All visualization-only nodes, descriptions, TF frames, and joint states live
+under `/demo2_display`. This prevents the older `neroarm_control` display in
+the same workspace from overwriting this pipeline's RViz model. Hardware
+command topics and CAN interfaces remain exclusive; never run two physical
+arm controllers at the same time.
+
 On the first run, enter the frame and stand naturally and still for three
 seconds. No T-pose, calibration board, tag, IMU, or other pose hardware is
 required, and the arms may stay naturally at any position. Keep both shoulders
@@ -81,9 +87,11 @@ restarting the calibration. The depth path rejects unsynchronized frames,
 depth holes, implausible limb lengths, large 3-D jumps, stale poses, and poor
 IK solutions. It waits briefly for the matching aligned-depth timestamp rather
 than pairing a color image with the previous 30 Hz depth frame.
-Anatomical left landmarks update only `/left/joint_states` and
-`/left/neroarm/command_joints`; anatomical right landmarks update only the
-matching `/right/...` topics. Each side has an independent validity check,
+Anatomical left landmarks update only
+`/demo2_display/left/joint_states` and
+`/left/neroarm/command_joints`; anatomical right landmarks update the
+corresponding display and `/right/neroarm/...` topics. Each side has an
+independent validity check,
 filter, IK state, timeout, and command gate, so a dropout on one arm does not
 freeze the other. Brief dropouts hold the last valid pose for up to
 `pose_timeout_sec` (0.35 seconds by default). After calibration, a missing
@@ -109,8 +117,8 @@ Inspect each side independently:
 ```bash
 ros2 topic echo /left/tracking_status
 ros2 topic echo /right/tracking_status
-ros2 topic echo /left/joint_states
-ros2 topic echo /right/joint_states
+ros2 topic echo /demo2_display/left/joint_states
+ros2 topic echo /demo2_display/right/joint_states
 ```
 
 ## Debug each layer independently

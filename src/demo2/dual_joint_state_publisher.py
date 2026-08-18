@@ -10,6 +10,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
+from demo2.arm_sides import DEFAULT_JOINT_STATE_TOPICS
 from demo2.instance_guard import acquire_instance_lock
 
 
@@ -40,8 +41,12 @@ class DualJointStatePublisher(Node):
     def __init__(self):
         """Configure fallback topics and collision detection."""
         super().__init__("dual_joint_state_publisher")
-        self.declare_parameter("left_topic", "/left/joint_states")
-        self.declare_parameter("right_topic", "/right/joint_states")
+        self.declare_parameter(
+            "left_topic", DEFAULT_JOINT_STATE_TOPICS["left"]
+        )
+        self.declare_parameter(
+            "right_topic", DEFAULT_JOINT_STATE_TOPICS["right"]
+        )
         self.declare_parameter("publish_rate_hz", 20.0)
         self.declare_parameter("startup_grace_sec", 0.75)
         self.declare_parameter(

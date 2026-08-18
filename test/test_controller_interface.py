@@ -192,8 +192,8 @@ def test_anatomical_sides_use_matching_topics():
         "right": (4, 5, 6),
     }
     assert DEFAULT_JOINT_STATE_TOPICS == {
-        "left": "/left/joint_states",
-        "right": "/right/joint_states",
+        "left": "/demo2_display/left/joint_states",
+        "right": "/demo2_display/right/joint_states",
     }
     assert DEFAULT_COMMAND_TOPICS == {
         "left": "/left/neroarm/command_joints",

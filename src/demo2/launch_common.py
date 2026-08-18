@@ -14,6 +14,11 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
+from demo2.arm_sides import (
+    DEFAULT_JOINT_STATE_TOPICS,
+    DISPLAY_NAMESPACE,
+)
+
 
 CAMERA_DEFAULTS = {
     "camera_namespace": "usb_realsense",
@@ -233,8 +238,8 @@ def controller_defaults():
         "publish_joint_states_enabled": "true",
         "command_output_enabled": "false",
         "exit_if_parent_changes": "true",
-        "left_joint_state_topic": "/left/joint_states",
-        "right_joint_state_topic": "/right/joint_states",
+        "left_joint_state_topic": DEFAULT_JOINT_STATE_TOPICS["left"],
+        "right_joint_state_topic": DEFAULT_JOINT_STATE_TOPICS["right"],
         "left_command_topic": "/left/neroarm/command_joints",
         "right_command_topic": "/right/neroarm/command_joints",
         "left_tracking_status_topic": "/left/tracking_status",
@@ -340,14 +345,16 @@ def robot_description():
     return {"robot_description": model.read_text(encoding="utf-8")}
 
 
-def arm_state_publishers(namespace, y_offset, pitch, yaw, name_suffix):
+def arm_state_publishers(side, y_offset, pitch, yaw, name_suffix):
     """Create TF and robot-state publishers for one arm."""
+    namespace = f"{DISPLAY_NAMESPACE}/{side}"
     prefix = f"{namespace}/"
     return [
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
-            name=f"{namespace}_{name_suffix}",
+            namespace=DISPLAY_NAMESPACE,
+            name=f"{side}_{name_suffix}",
             arguments=[
                 "--x", "0.0", "--y", str(y_offset), "--z", "0.70",
                 "--roll", "0.0", "--pitch", str(pitch), "--yaw", str(yaw),
@@ -360,7 +367,9 @@ def arm_state_publishers(namespace, y_offset, pitch, yaw, name_suffix):
             executable="robot_state_publisher",
             namespace=namespace,
             parameters=[robot_description(), {"frame_prefix": prefix}],
-            remappings=[("joint_states", f"/{namespace}/joint_states")],
+            remappings=[
+                ("joint_states", DEFAULT_JOINT_STATE_TOPICS[side])
+            ],
             output="screen",
         ),
     ]

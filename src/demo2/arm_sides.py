@@ -4,6 +4,7 @@ import numpy as np
 
 
 SIDES = ("left", "right")
+DISPLAY_NAMESPACE = "demo2_display"
 TORSO_LANDMARK_INDICES = (0, 3, 4, 7)
 ARM_LANDMARK_INDICES = {
     "left": (0, 1, 2),
@@ -14,8 +15,7 @@ REQUIRED_LANDMARK_INDICES = {
     for side, arm_indices in ARM_LANDMARK_INDICES.items()
 }
 DEFAULT_JOINT_STATE_TOPICS = {
-    "left": "/left/joint_states",
-    "right": "/right/joint_states",
+    side: f"/{DISPLAY_NAMESPACE}/{side}/joint_states" for side in SIDES
 }
 DEFAULT_COMMAND_TOPICS = {
     "left": "/left/neroarm/command_joints",

@@ -6,7 +6,7 @@ usage() {
   printf '%s\n' \
     'Usage: ./run.sh [--no-build] [ROS launch arguments...]' \
     '' \
-    'Builds demo2 incrementally and starts the complete RealSense pipeline.' \
+    'Builds demo2, sources <workspace>/install/setup.bash, and starts it.' \
     'Physical robot hardware and vision motion output are enabled by default.' \
     'Check the emergency stop, CAN mapping, and operating area before running.' \
     '' \
@@ -73,6 +73,7 @@ elif [[ ! -f "$workspace_dir/install/setup.bash" ]]; then
   exit 1
 fi
 
+printf '[demo2] source %s\n' "$workspace_dir/install/setup.bash"
 source "$workspace_dir/install/setup.bash"
 export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
 
@@ -91,5 +92,15 @@ for user_argument in "$@"; do
     *) launch_arguments+=("$user_argument") ;;
   esac
 done
+
+if [[ "${launch_arguments[0]}" == "start_hardware:=true" ]] && \
+  pgrep -f \
+    'neroarm_control/(neroarm_driver|neroarm_sim|neroarm_dance)' \
+    >/dev/null 2>&1; then
+  printf '%s\n' \
+    'error: a conflicting neroarm_control process is already running' \
+    'stop the old neroarm.launch.py before starting physical hardware' >&2
+  exit 1
+fi
 
 exec ros2 launch demo2 realsense_depth_arm.launch.py "${launch_arguments[@]}"

@@ -238,9 +238,11 @@ outward and vertical components keep their signs. Both arms therefore move
 in the same sagittal world direction without swapping their independent
 left/right topics.
 
-The anatomical left arm is fixed to `/left/joint_states` and
-`/left/neroarm/command_joints`; the anatomical right arm is fixed to the
-corresponding `/right/...` outputs. Their confidence/depth checks, filters, IK
+The anatomical left arm is fixed to
+`/demo2_display/left/joint_states` for visualization and
+`/left/neroarm/command_joints` for hardware control; the anatomical right arm
+uses the corresponding display and `/right/neroarm/...` outputs. Their
+confidence/depth checks, filters, IK
 state, timeouts, and command gates are independent. Monitor
 `/left/tracking_status` and `/right/tracking_status` to see which side is
 tracking or holding its last valid pose.
@@ -293,7 +295,8 @@ valid IK solution. After tracking starts, brief invalid or missing frames
 retain the last valid result; a side closes its hardware command gate only
 after its independent timeout and never snaps RViz back to all zeros. Do not
 run a second joint-state publisher on
-`/left/joint_states` or `/right/joint_states` while diagnosing tracking.
+`/demo2_display/left/joint_states` or
+`/demo2_display/right/joint_states` while diagnosing tracking.
 
 ## Move recognition to another package
 
