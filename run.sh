@@ -7,11 +7,13 @@ usage() {
     'Usage: ./run.sh [--no-build] [ROS launch arguments...]' \
     '' \
     'Builds demo2 incrementally and starts the complete RealSense pipeline.' \
-    'Robot hardware and motion output stay disabled unless explicitly enabled.' \
+    'Physical robot hardware and vision motion output are enabled by default.' \
+    'Check the emergency stop, CAN mapping, and operating area before running.' \
     '' \
     'Examples:' \
     '  ./run.sh' \
     '  ./run.sh --no-build show_gui:=false start_rviz:=false' \
+    '  ./run.sh start_hardware:=false command_output_enabled:=false hardware_execute_motion:=false' \
     "  ./run.sh serial_no:=\"'123456789'\"" \
     '' \
     'Environment:' \
@@ -74,4 +76,20 @@ fi
 source "$workspace_dir/install/setup.bash"
 export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
 
-exec ros2 launch demo2 realsense_depth_arm.launch.py "$@"
+launch_arguments=(
+  "start_hardware:=true"
+  "command_output_enabled:=true"
+  "hardware_execute_motion:=true"
+)
+
+# Let explicit command-line values override the three real-hardware defaults.
+for user_argument in "$@"; do
+  case "$user_argument" in
+    start_hardware:=*) launch_arguments[0]="$user_argument" ;;
+    command_output_enabled:=*) launch_arguments[1]="$user_argument" ;;
+    hardware_execute_motion:=*) launch_arguments[2]="$user_argument" ;;
+    *) launch_arguments+=("$user_argument") ;;
+  esac
+done
+
+exec ros2 launch demo2 realsense_depth_arm.launch.py "${launch_arguments[@]}"

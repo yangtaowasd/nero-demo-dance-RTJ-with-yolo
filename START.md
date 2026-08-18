@@ -22,8 +22,11 @@ cd ~/demo_ws/src/nero-demo-dance-RTJ-with-yolo
 ```
 
 脚本会自动加载 ROS 环境、增量编译 `demo2`、加载工作区环境，并启动
-RealSense、YOLO 姿态识别和双臂 RViz。默认不会连接机械臂，也不会下发
-运动指令。按 `Ctrl+C` 停止。
+RealSense、YOLO 姿态识别和双臂 RViz。**默认会连接 `can1`（左臂）和
+`can0`（右臂），自动使能真机并下发视觉运动指令。**按 `Ctrl+C` 停止。
+
+运行前必须确认急停可用、CAN 口对应正确、机械臂周围无人，并提前启用
+`can0` 和 `can1`。启动后有 10 秒运动延迟，可用于最后的安全确认。
 
 跳过已有构建，或关闭 GUI/RViz：
 
@@ -31,18 +34,16 @@ RealSense、YOLO 姿态识别和双臂 RViz。默认不会连接机械臂，也�
 ./run.sh --no-build show_gui:=false start_rviz:=false
 ```
 
-只有确认识别、深度和 RViz 动作稳定后，才可显式启用真机：
+仅运行识别和 RViz、完全禁止真机连接与运动：
 
 ```bash
-./run.sh start_hardware:=true \
-  command_output_enabled:=true \
-  hardware_execute_motion:=true \
-  left_can_interface:=can1 \
-  right_can_interface:=can0
+./run.sh start_hardware:=false \
+  command_output_enabled:=false \
+  hardware_execute_motion:=false
 ```
 
-真机启动前必须确认急停可用、CAN 口对应正确且机械臂周围无人。若 ROS
-安装位置不同，可用 `ROS_SETUP=/path/to/setup.bash ./run.sh`。
+若 ROS 安装位置不同，可用
+`ROS_SETUP=/path/to/setup.bash ./run.sh`。
 
 ## 日本語
 
@@ -67,8 +68,12 @@ cd ~/demo_ws/src/nero-demo-dance-RTJ-with-yolo
 
 スクリプトは ROS 環境の読み込み、`demo2` の差分ビルド、ワークスペースの
 読み込みを行い、RealSense、YOLO 姿勢推定、両腕の RViz 表示を起動します。
-デフォルトでは実機に接続せず、動作指令も送信しません。終了は `Ctrl+C`
-です。
+**デフォルトで `can1`（左腕）と `can0`（右腕）に接続し、実機を自動的に
+有効化して視覚追従指令を送信します。**終了は `Ctrl+C` です。
+
+実行前に非常停止、CAN ポートの左右、周囲の安全を確認し、`can0` と
+`can1` を有効にしてください。起動後、実機の動作開始まで 10 秒間の安全
+待機時間があります。
 
 ビルドを省略する場合、または GUI/RViz を無効にする場合：
 
@@ -76,18 +81,14 @@ cd ~/demo_ws/src/nero-demo-dance-RTJ-with-yolo
 ./run.sh --no-build show_gui:=false start_rviz:=false
 ```
 
-認識、深度、RViz の動作を十分確認した後に限り、実機を明示的に有効化して
-ください。
+認識と RViz のみを実行し、実機接続と動作を完全に無効化する場合：
 
 ```bash
-./run.sh start_hardware:=true \
-  command_output_enabled:=true \
-  hardware_execute_motion:=true \
-  left_can_interface:=can1 \
-  right_can_interface:=can0
+./run.sh start_hardware:=false \
+  command_output_enabled:=false \
+  hardware_execute_motion:=false
 ```
 
-実機起動前に、非常停止、CAN ポートの左右、周囲の安全を確認してください。
 ROS の場所が異なる場合は
 `ROS_SETUP=/path/to/setup.bash ./run.sh` を使用します。
 
@@ -114,8 +115,13 @@ cd ~/demo_ws/src/nero-demo-dance-RTJ-with-yolo
 
 The script sources ROS, builds `demo2` incrementally, sources the workspace,
 and starts RealSense capture, YOLO pose detection, and the dual-arm RViz view.
-Robot hardware and motion commands are disabled by default. Press `Ctrl+C` to
-stop.
+**By default it connects to `can1` (left) and `can0` (right), automatically
+enables the physical arms, and sends vision motion commands.** Press `Ctrl+C`
+to stop.
+
+Before running, verify the emergency stop, left/right CAN mapping, and a clear
+operating area, then bring up `can0` and `can1`. A 10-second motion delay after
+startup provides time for a final safety check.
 
 To reuse an existing build or disable GUI/RViz:
 
@@ -123,17 +129,13 @@ To reuse an existing build or disable GUI/RViz:
 ./run.sh --no-build show_gui:=false start_rviz:=false
 ```
 
-Enable the physical arms only after recognition, depth, and RViz motion have
-been verified:
+To run recognition and RViz while completely disabling hardware and motion:
 
 ```bash
-./run.sh start_hardware:=true \
-  command_output_enabled:=true \
-  hardware_execute_motion:=true \
-  left_can_interface:=can1 \
-  right_can_interface:=can0
+./run.sh start_hardware:=false \
+  command_output_enabled:=false \
+  hardware_execute_motion:=false
 ```
 
-Before hardware startup, verify the emergency stop, left/right CAN mapping,
-and a clear operating area. If ROS is installed elsewhere, run
+If ROS is installed elsewhere, run
 `ROS_SETUP=/path/to/setup.bash ./run.sh`.
