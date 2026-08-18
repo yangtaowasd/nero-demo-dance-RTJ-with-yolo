@@ -143,7 +143,7 @@ class DepthArmController(Node):
             "point_motion_full_m": 0.060,
             "max_point_jump_m": 0.25,
             "bone_length_tolerance_ratio": 0.30,
-            "neutral_calibration_sec": 3.0,
+            "neutral_calibration_sec": 2.0,
             "calibration_min_samples": 8,
             "calibration_file": (
                 "~/.ros/demo2/realsense_person_calibration.json"

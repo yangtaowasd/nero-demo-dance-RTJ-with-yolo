@@ -21,6 +21,10 @@ from demo2.pyagxarm_driver import (
     joint_enable_values,
     joint_values,
     motion_delay_remaining,
+    reset_emergency_stop_and_wait,
+    PyAgxArmDriver,
+    temporary_enable_probe,
+    wait_for_enabled_hardware,
 )
 
 
@@ -75,13 +79,13 @@ def test_shutdown_home_is_fixed_zero_ninety_pose():
     np.testing.assert_allclose(DEFAULT_SHUTDOWN_HOME_JOINTS, expected)
 
 
-def test_physical_motion_gate_waits_ten_seconds_after_enable():
+def test_physical_motion_gate_waits_five_seconds_after_enable():
     """Vision may update while hardware commands remain gated."""
-    assert motion_delay_remaining(100.0, 100.0, 10.0) == 10.0
-    assert motion_delay_remaining(100.0, 106.5, 10.0) == 3.5
-    assert motion_delay_remaining(100.0, 110.0, 10.0) == 0.0
-    assert motion_delay_remaining(100.0, 120.0, 10.0) == 0.0
-    assert motion_delay_remaining(None, 100.0, 10.0) == 0.0
+    assert motion_delay_remaining(100.0, 100.0, 5.0) == 5.0
+    assert motion_delay_remaining(100.0, 103.5, 5.0) == 1.5
+    assert motion_delay_remaining(100.0, 105.0, 5.0) == 0.0
+    assert motion_delay_remaining(100.0, 120.0, 5.0) == 0.0
+    assert motion_delay_remaining(None, 100.0, 5.0) == 0.0
 
 
 def test_command_watchdog_rejects_missing_and_stale_targets():
@@ -153,3 +157,213 @@ def test_official_arm_status_and_joint_enable_feedback_are_normalized():
     assert arm_status_code(None) is None
     assert joint_enable_values([1] * 7) == [True] * 7
     assert joint_enable_values([True] * 6) is None
+
+
+class FakeClock:
+    """Advance deterministic hardware polling time without real sleeps."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, duration):
+        self.now += duration
+
+
+def test_stage_one_enables_exactly_once_reads_state_then_cleans_up():
+    """The discovery arm can never become the formal motion connection."""
+
+    class ProbeArm:
+        def __init__(self):
+            self.calls = []
+
+        def connect(self):
+            self.calls.append("connect")
+
+        def enable(self):
+            self.calls.append("enable")
+            return False
+
+        def get_firmware(self, timeout, min_interval):
+            self.calls.append("firmware")
+            return {"software_version": "1.11"}
+
+        def get_arm_status(self):
+            self.calls.append("status")
+            return SimpleNamespace(msg=SimpleNamespace(arm_status=0x06))
+
+        def get_joints_enable_status_list(self):
+            self.calls.append("joint_enable")
+            return [True] * 7
+
+        def get_joint_angles(self):
+            self.calls.append("joints")
+            return SimpleNamespace(msg=[0.1] * 7)
+
+        def disable(self):
+            self.calls.append("disable")
+            return True
+
+        def disconnect(self):
+            self.calls.append("disconnect")
+
+    arm = ProbeArm()
+    snapshot = temporary_enable_probe(arm, 1.0)
+
+    assert arm.calls.count("enable") == 1
+    assert arm.calls[-2:] == ["disable", "disconnect"]
+    assert arm.calls.index("enable") < arm.calls.index("firmware")
+    assert snapshot["firmware_info"] == {"software_version": "1.11"}
+    assert snapshot["arm_status"] == 0x06
+    assert snapshot["joints_enabled"] == [True] * 7
+    assert snapshot["disable_confirmed"] is True
+    np.testing.assert_allclose(snapshot["joint_positions"], [0.1] * 7)
+
+
+def test_stage_one_cleans_up_when_state_read_fails():
+    """A failed probe still disables and disconnects, then fails closed."""
+
+    class FailingProbe:
+        def __init__(self):
+            self.calls = []
+
+        def connect(self):
+            self.calls.append("connect")
+
+        def enable(self):
+            self.calls.append("enable")
+            return True
+
+        def get_firmware(self, timeout, min_interval):
+            self.calls.append("firmware")
+            raise RuntimeError("no firmware")
+
+        def disable(self):
+            self.calls.append("disable")
+
+        def disconnect(self):
+            self.calls.append("disconnect")
+
+    arm = FailingProbe()
+    with pytest.raises(RuntimeError, match="no firmware"):
+        temporary_enable_probe(arm, 1.0)
+
+    assert arm.calls == [
+        "connect", "enable", "firmware", "disable", "disconnect"
+    ]
+
+
+def test_stage_two_waits_through_brake_release_before_motion_gate():
+    """A transient v1.11 brake state cannot fail or open the motion gate."""
+
+    class FormalArm:
+        def __init__(self):
+            self.statuses = [0x06, 0x00]
+
+        def get_joint_angles(self):
+            return SimpleNamespace(msg=[0.2] * 7)
+
+        def get_joints_enable_status_list(self):
+            return [True] * 7
+
+        def get_arm_status(self):
+            status = self.statuses.pop(0) if len(self.statuses) > 1 else 0x00
+            return SimpleNamespace(msg=SimpleNamespace(arm_status=status))
+
+    clock = FakeClock()
+    measured, enabled, status = wait_for_enabled_hardware(
+        FormalArm(),
+        1.0,
+        poll_period=0.05,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    np.testing.assert_allclose(measured, [0.2] * 7)
+    assert enabled == [True] * 7
+    assert status == 0x00
+    assert clock.now == pytest.approx(0.05)
+
+
+def test_startup_reset_is_confirmed_before_formal_enable():
+    """A persisted software stop is reset once and verified from feedback."""
+
+    class StoppedArm:
+        def __init__(self):
+            self.reset_calls = 0
+            self.statuses = [0x01, 0x01, 0x06]
+
+        def reset(self):
+            self.reset_calls += 1
+
+        def get_arm_status(self):
+            status = self.statuses.pop(0)
+            return SimpleNamespace(msg=SimpleNamespace(arm_status=status))
+
+    arm = StoppedArm()
+    clock = FakeClock()
+    status = reset_emergency_stop_and_wait(
+        arm,
+        1.0,
+        poll_period=0.05,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert arm.reset_calls == 1
+    assert status == 0x06
+    assert clock.now == pytest.approx(0.1)
+
+
+def test_startup_delay_sends_no_move_and_first_command_is_one_small_step():
+    """Calibration/delay time cannot accumulate into a first-command jump."""
+
+    class Arm:
+        def __init__(self):
+            self.moves = []
+
+        def move_j(self, target):
+            self.moves.append(target)
+
+    class Logger:
+        def info(self, _message):
+            pass
+
+        def warning(self, _message):
+            pass
+
+    driver = SimpleNamespace(
+        arm=Arm(),
+        side="left",
+        enabled=True,
+        estopped=False,
+        measured_joints=np.zeros(7),
+        motion_enable_time=100.0,
+        motion_start_delay=5.0,
+        motion_delay_hold_commanded=False,
+        motion_command_started=False,
+        last_sent_joints=np.zeros(7),
+        last_send_time=100.0,
+        latest_command=np.ones(7),
+        latest_command_time=100.0,
+        command_timeout=0.35,
+        watchdog_holding=False,
+        max_command_speed=np.deg2rad(30.0),
+        joint_limits=np.asarray([[-2.0, 2.0]] * 7),
+        publish_status=lambda *_args: None,
+        get_logger=lambda: Logger(),
+    )
+
+    PyAgxArmDriver.send_latest_command(driver, 102.0)
+    assert driver.arm.moves == []
+    assert driver.last_send_time == 102.0
+
+    driver.latest_command_time = 105.0
+    PyAgxArmDriver.send_latest_command(driver, 105.0)
+
+    assert len(driver.arm.moves) == 1
+    np.testing.assert_allclose(
+        driver.arm.moves[0], [np.deg2rad(0.03)] * 7
+    )

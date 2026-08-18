@@ -40,7 +40,7 @@ point and a shorter joint time constant to avoid adding fixed latency.
 RealSense provides its factory-calibrated color/depth intrinsics through
 `CameraInfo`. Runtime calibration therefore needs no board, tag, IMU, or
 additional pose hardware: the controller averages the visible shoulder/hip
-geometry while the person stands naturally and still for three seconds. Arm
+geometry while the person stands naturally and still for two seconds. Arm
 position during this step is unrestricted; only both shoulders and both hips
 must remain visible. Isolated detector/depth outliers are discarded rather
 than restarting the sample window.
@@ -200,7 +200,7 @@ Use this as the only tracking entry point. The complete controller and the
 static model-only display share one process lock; accidentally starting both
 cannot create competing mount TF or joint-state publishers.
 
-On first use, stand naturally and still in view for three seconds. The
+On first use, stand naturally and still in view for two seconds. The
 reference is saved as
 `~/.ros/demo2/person_calibration_108322074190.json` and automatically loaded
 on later runs. Its camera identity is validated before use; legacy records or
@@ -212,7 +212,7 @@ ros2 service call /depth_arm_controller/recalibrate \
   std_srvs/srv/Trigger {}
 ```
 
-Then stand naturally and keep both shoulders and hips stable in view for three
+Then stand naturally and keep both shoulders and hips stable in view for two
 seconds. The arms do not need any prescribed pose.
 
 Use these diagnostics to inspect the result:
@@ -259,15 +259,42 @@ command topic. The defaults are:
 | right | `can0` | `/right/neroarm/command_joints` | `/right/neroarm/measured_joint_states` | `/right/neroarm/hardware_status` |
 
 Starting with `hardware_execute_motion:=false` remains read-only. When it is
-explicitly set to `true`, the default `hardware_auto_enable:=true` performs a
-one-shot enable on both arms as soon as their transports connect. With no
-fresh visual command, the drivers hold the current measured pose. Set
-`hardware_auto_enable:=false` to use the side-specific `~/enable` services.
+explicitly set to `true`, each process performs a one-shot stage-1 probe with
+the DEFAULT firmware profile: connect, issue one temporary enable request,
+read firmware metadata, controller status, seven motor-enable flags, and seven
+joint positions, then disable and disconnect. No `move_j` command is sent in
+this stage. After `hardware_probe_reconnect_delay_sec:=0.5`, the process creates
+a distinct arm object with the detected firmware profile and formally
+reconnects.
 
-The default `hardware_motion_start_delay_sec:=10.0` gates only physical joint
-commands for the first ten seconds after enable. Camera acquisition, YOLO,
+If the stage-1 snapshot reports a persisted electronic emergency stop, the
+formal connection performs one startup `reset()` and waits up to
+`hardware_emergency_reset_timeout_sec:=5.0` for status to leave
+EMERGENCY_STOP. This matches the other Nero project and is enabled by
+`hardware_reset_emergency_stop_on_start:=true`. It does not bypass a physical
+or unresettable stop: a failed confirmation leaves formal enable blocked, and
+the side-specific `~/reset` service uses the same feedback confirmation.
+
+The default `hardware_auto_enable:=true` then performs stage 2, the actual
+operational enable. The command gate remains closed until controller status is
+NORMAL, all seven motors are enabled, and all seven joint positions are
+available. A transient v1.11 `joint_brake_not_released` state is polled until
+the enable timeout instead of being rejected immediately. With no fresh visual
+command, the drivers hold the current measured pose. Set
+`hardware_auto_enable:=false` to make stage 2 use the side-specific `~/enable`
+services.
+
+Stage 1 is consumed only once per process. A probe/read/cleanup failure remains
+fail-closed until process restart, so a CAN reconnect loop cannot repeatedly
+toggle motor enable. Stage 2 auto-enable is also one-shot.
+
+The default `hardware_motion_start_delay_sec:=5.0` gates only physical joint
+commands for the first five seconds after enable. Camera acquisition, YOLO,
 depth fusion, tracking topics, and RViz continue updating during that delay;
-each physical arm holds its measured pose until the gate opens.
+the driver sends no `move_j` trajectory during calibration or the delay. It
+continuously re-anchors the rate limiter to fresh measured joints, so the first
+valid vision target—and the first target after a watchdog hold—can advance by
+only one 20 Hz rate-limited step instead of accumulating the entire wait time.
 
 The default `return_to_home_on_shutdown:=true` sends both arms to the fixed
 joint pose `[0, 90, 0, 0, 0, 0, 0]` degrees after `Ctrl+C`, with an
@@ -275,12 +302,11 @@ eight-second timeout and 1.5-degree all-joint tolerance. If the return cannot
 be confirmed, each driver holds its latest measured pose before disconnecting.
 
 Firmware defaults to the verified `v111` on both arms. With Nero v1.11 the
-continuous CAN feedback stream starts during the explicit enable/normal-mode
-sequence; before that, the hardware status is
-`connected_waiting_for_enable`. `auto` remains available for controllers that
-return `software_version` while disabled. Hardware status includes the
-requested/resolved firmware, controller `arm_status`, and all seven joint
-enable flags.
+continuous CAN feedback stream starts during enable/normal-mode. The stage-1
+snapshot is therefore used to validate the configured profile before the
+formal connection. `auto` selects the detected profile. Hardware status
+includes the requested/resolved firmware, controller `arm_status`, all seven
+joint enable flags, and the saved stage-1 snapshot/state flags.
 
 The hardware boundary independently rejects non-finite, malformed, and
 out-of-URDF-limit commands. Enabling also requires NORMAL controller status

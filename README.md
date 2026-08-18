@@ -7,6 +7,12 @@ directions on two Nero arms. The real-time detector is C++ YOLO/TorchScript.
 For the one-click launcher and startup instructions in Chinese, Japanese, and
 English, see [START.md](START.md).
 
+The one-click `run.sh` deliberately performs a fresh two-second natural
+standing calibration on every start. This prevents a moved camera from leaving
+the hardware command gate closed because of a stale person-orientation
+reference. Pass `load_calibration_on_start:=true` only when the camera and
+standing setup are unchanged.
+
 ## Split architecture
 
 The depth-camera path is deliberately separated at ROS topic boundaries:
@@ -79,7 +85,7 @@ the same workspace from overwriting this pipeline's RViz model. Hardware
 command topics and CAN interfaces remain exclusive; never run two physical
 arm controllers at the same time.
 
-On the first run, enter the frame and stand naturally and still for three
+On the first run, enter the frame and stand naturally and still for two
 seconds. No T-pose, calibration board, tag, IMU, or other pose hardware is
 required, and the arms may stay naturally at any position. Keep both shoulders
 and both hips visible; isolated YOLO/depth outliers are ignored instead of
@@ -110,7 +116,7 @@ ros2 service call /depth_arm_controller/recalibrate std_srvs/srv/Trigger {}
 ```
 
 After the service succeeds, stand naturally and keep both shoulders and hips
-stable in view for three seconds. Arm position is unrestricted.
+stable in view for two seconds. Arm position is unrestricted.
 
 Inspect each side independently:
 
@@ -264,8 +270,10 @@ ros2 launch demo2 dual_nero_pyagxarm.launch.py
 This dual-arm installation defaults to the verified v1.11 driver on both
 sides. Nero v1.11 starts continuous CAN feedback only after the explicit
 enable sequence, so a powered but disabled arm reports
-`connected_waiting_for_enable`. Set either firmware argument to `auto` only
-when that controller returns `software_version` while disabled.
+`connected_waiting_for_enable` in read-only mode. During an actual hardware
+start, stage 1 validates the configured v1.11 profile against the detected
+firmware; set either firmware argument to `auto` to select the detected profile
+instead.
 
 For the complete camera pipeline, add `start_hardware:=true`. When motion is
 explicitly enabled in the launch command, both v1.11 arms enable automatically
@@ -282,10 +290,23 @@ ros2 launch demo2 realsense_depth_arm.launch.py \
   right_can_interface:=can0
 ```
 
-Auto-enable is one-shot and requires positive position/enable feedback from
-all seven motors. For the first 10 seconds after enable, recognition and RViz
+Startup now uses the same two-stage enable sequence as the other Nero project.
+Stage 1 sends exactly one temporary enable request, reads firmware, arm status,
+all seven enable flags, and all seven joint positions, then disables and
+disconnects without sending `move_j`. After a 0.5-second settling delay, a new
+profile-specific connection performs startup preparation and stage 2, the real
+enable. If stage 1 found a persisted software electronic stop, startup
+preparation resets it once and verifies the reset, matching the other Nero
+project. A physical/unresettable stop remains blocked. The physical motion gate
+opens only after stage 2 reports NORMAL status, seven enabled motors, and
+complete position feedback.
+
+Stage 1 and the default automatic stage 2 are one-shot. If stage 1 fails, the
+process stays disabled until restart instead of repeatedly enabling during
+reconnect. For the first 5 seconds after stage 2, recognition and RViz
 continue updating but the hardware drivers ignore vision motion commands and
-hold the measured pose. It never repeats after a connection failure. Set
+send no `move_j` trajectory. The first accepted target ramps from the latest
+measured pose with a single 20 Hz rate-limited step. Set
 `hardware_auto_enable:=false` to restore manual `~/enable` service control. A
 350 ms command timeout holds the measured pose; lost joint feedback closes the
 command gate and triggers the pyAgxArm electronic stop. Emergency-stop

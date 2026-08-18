@@ -26,6 +26,12 @@ def arm_driver(side, can_argument, firmware_argument, condition_argument):
         "status_topic": f"/{side}/neroarm/hardware_status",
         "execute_motion": values["hardware_execute_motion"],
         "auto_enable": values["hardware_auto_enable"],
+        "reset_emergency_stop_on_start": values[
+            "hardware_reset_emergency_stop_on_start"
+        ],
+        "emergency_reset_timeout_sec": values[
+            "hardware_emergency_reset_timeout_sec"
+        ],
         "require_command_before_enable": values[
             "hardware_require_command_before_enable"
         ],
@@ -46,6 +52,9 @@ def arm_driver(side, can_argument, firmware_argument, condition_argument):
         "command_timeout_sec": values["hardware_command_timeout_sec"],
         "feedback_timeout_sec": values["hardware_feedback_timeout_sec"],
         "connect_timeout_sec": values["hardware_connect_timeout_sec"],
+        "probe_reconnect_delay_sec": values[
+            "hardware_probe_reconnect_delay_sec"
+        ],
         "reconnect_interval_sec": values[
             "hardware_reconnect_interval_sec"
         ],

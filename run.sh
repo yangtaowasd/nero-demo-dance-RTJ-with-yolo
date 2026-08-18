@@ -8,6 +8,8 @@ usage() {
     '' \
     'Builds demo2, sources <workspace>/install/setup.bash, and starts it.' \
     'Physical robot hardware and vision motion output are enabled by default.' \
+    'Hardware startup uses a temporary probe enable, then a formal enable.' \
+    'A fresh two-second person calibration is performed by default.' \
     'Check the emergency stop, CAN mapping, and operating area before running.' \
     '' \
     'Examples:' \
@@ -81,14 +83,16 @@ launch_arguments=(
   "start_hardware:=true"
   "command_output_enabled:=true"
   "hardware_execute_motion:=true"
+  "load_calibration_on_start:=false"
 )
 
-# Let explicit command-line values override the three real-hardware defaults.
+# Let explicit command-line values override the real-hardware defaults.
 for user_argument in "$@"; do
   case "$user_argument" in
     start_hardware:=*) launch_arguments[0]="$user_argument" ;;
     command_output_enabled:=*) launch_arguments[1]="$user_argument" ;;
     hardware_execute_motion:=*) launch_arguments[2]="$user_argument" ;;
+    load_calibration_on_start:=*) launch_arguments[3]="$user_argument" ;;
     *) launch_arguments+=("$user_argument") ;;
   esac
 done
