@@ -6,7 +6,6 @@ from ament_index_python.packages import (
 )
 from launch import LaunchDescription
 from launch.actions import (
-    DeclareLaunchArgument,
     GroupAction,
     IncludeLaunchDescription,
     LogInfo,
@@ -15,12 +14,13 @@ from launch.actions import (
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 
-
-def typed(name, value_type):
-    """Return a typed launch parameter."""
-    return ParameterValue(LaunchConfiguration(name), value_type=value_type)
+from demo2.launch_common import (
+    CAMERA_DEFAULTS,
+    CAMERA_PARAMETER_TYPES,
+    configured_parameters,
+    declare_arguments,
+)
 
 
 def camera_driver_action():
@@ -28,22 +28,8 @@ def camera_driver_action():
     try:
         driver_share = get_package_share_directory("realsense2_camera")
     except PackageNotFoundError:
-        parameters = {
-            "camera_namespace": LaunchConfiguration("camera_namespace"),
-            "camera_name": LaunchConfiguration("camera_name"),
-            "serial_no": LaunchConfiguration("serial_no"),
-            "color_profile": LaunchConfiguration("color_profile"),
-            "depth_profile": LaunchConfiguration("depth_profile"),
-            "initial_reset": typed("initial_reset", bool),
-            "spatial_filter_enabled": typed(
-                "spatial_filter_enabled", bool
-            ),
-            "temporal_filter_enabled": typed(
-                "temporal_filter_enabled", bool
-            ),
-            "show_gui": False,
-            "publish_composite": False,
-        }
+        parameters = configured_parameters(CAMERA_PARAMETER_TYPES)
+        parameters.update({"show_gui": False, "publish_composite": False})
         return GroupAction(actions=[
             LogInfo(
                 msg=(
@@ -75,7 +61,9 @@ def camera_driver_action():
             "align_depth.enable": "true",
             "enable_rgbd": "false",
             "pointcloud.enable": "false",
-            "rgb_camera.color_profile": LaunchConfiguration("color_profile"),
+            "rgb_camera.color_profile": LaunchConfiguration(
+                "color_profile"
+            ),
             "depth_module.depth_profile": LaunchConfiguration(
                 "depth_profile"
             ),
@@ -92,23 +80,8 @@ def camera_driver_action():
 
 def generate_launch_description():
     """Build the camera-only launch description."""
-    defaults = {
-        "camera_namespace": "usb_realsense",
-        "camera_name": "d435i",
-        "serial_no": "'108322074190'",
-        "color_profile": "640x480x30",
-        "depth_profile": "640x480x30",
-        "initial_reset": "false",
-        "spatial_filter_enabled": "false",
-        "temporal_filter_enabled": "true",
-    }
     return LaunchDescription([
-        SetEnvironmentVariable(
-            name="ROS_LOCALHOST_ONLY", value="1"
-        ),
-        *[
-            DeclareLaunchArgument(name, default_value=value)
-            for name, value in defaults.items()
-        ],
+        SetEnvironmentVariable(name="ROS_LOCALHOST_ONLY", value="1"),
+        *declare_arguments(CAMERA_DEFAULTS),
         camera_driver_action(),
     ])

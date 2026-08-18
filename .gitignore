@@ -7,3 +7,4 @@ __pycache__/
 .pytest_cache/
 .colcon/
 .vscode/browse.vc.db*
+model/*.pt

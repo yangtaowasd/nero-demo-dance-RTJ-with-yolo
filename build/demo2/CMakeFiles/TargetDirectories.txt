@@ -1,9 +1,0 @@
-/home/yang/demo_ws/src/demo2/build/demo2/CMakeFiles/uninstall.dir
-/home/yang/demo_ws/src/demo2/build/demo2/CMakeFiles/demo2_uninstall.dir
-/home/yang/demo_ws/src/demo2/build/demo2/CMakeFiles/test.dir
-/home/yang/demo_ws/src/demo2/build/demo2/CMakeFiles/edit_cache.dir
-/home/yang/demo_ws/src/demo2/build/demo2/CMakeFiles/rebuild_cache.dir
-/home/yang/demo_ws/src/demo2/build/demo2/CMakeFiles/list_install_components.dir
-/home/yang/demo_ws/src/demo2/build/demo2/CMakeFiles/install.dir
-/home/yang/demo_ws/src/demo2/build/demo2/CMakeFiles/install/local.dir
-/home/yang/demo_ws/src/demo2/build/demo2/CMakeFiles/install/strip.dir

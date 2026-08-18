@@ -4,6 +4,9 @@ This ROS 2 package detects a person's arms in Intel RealSense color images,
 reconstructs the landmarks with aligned hardware depth, and mirrors the 3-D
 directions on two Nero arms. The real-time detector is C++ YOLO/TorchScript.
 
+For the one-click launcher and startup instructions in Chinese, Japanese, and
+English, see [START.md](START.md).
+
 ## Split architecture
 
 The depth-camera path is deliberately separated at ROS topic boundaries:
